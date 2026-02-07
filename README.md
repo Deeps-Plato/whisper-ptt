@@ -24,7 +24,7 @@ SAMPLE_RATE = 16000
 DEVICE_NAME = "Volt 2"        # Audio input device
 MODEL_SIZE = "base"           # tiny, base, small, medium, large-v3
 INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL."
-DUCK_LEVEL = 0.2              # Audio ducking: 0.0 = mute, 1.0 = no change
+DUCK_LEVEL = 0.1              # Audio ducking: 0.0 = mute, 1.0 = no change
 ```
 
 ## Adding Words to Prompt
