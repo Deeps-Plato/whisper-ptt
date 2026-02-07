@@ -28,7 +28,7 @@ SAMPLE_RATE = 16000
 DEVICE_NAME = "Volt 2"
 MODEL_SIZE = "base"
 INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL."
-DUCK_LEVEL = 0.2  # 0.0 = mute, 1.0 = no change
+DUCK_LEVEL = 0.1  # 0.0 = mute, 1.0 = no change
 
 # State
 recording = False
