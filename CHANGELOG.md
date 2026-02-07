@@ -2,6 +2,8 @@
 
 ## 2026-02-07
 
+- Audio ducking via pycaw: other apps dim to 20% while recording, restore on release
+  - Configurable via `DUCK_LEVEL` (0.0=mute, 1.0=off)
 - Clipboard preservation: saves/restores clipboard around paste so PTT doesn't clobber it
 - Registered `WhisperPTT` as Windows Task Scheduler task
   - Starts at logon under `admin` user session (interactive, not session 0)

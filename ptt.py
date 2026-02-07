@@ -20,17 +20,21 @@ from faster_whisper import WhisperModel
 from pynput import keyboard
 import pyperclip
 import pyautogui
+from comtypes import CoInitialize, CoUninitialize
+from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
 
 # Config
 SAMPLE_RATE = 16000
 DEVICE_NAME = "Volt 2"
 MODEL_SIZE = "base"
 INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL."
+DUCK_LEVEL = 0.2  # 0.0 = mute, 1.0 = no change
 
 # State
 recording = False
 audio_chunks = []
 model = None
+saved_volumes = {}  # pid -> original volume
 
 def find_device():
     devices = sd.query_devices()
@@ -53,12 +57,46 @@ def transcribe(audio):
                                 initial_prompt=INITIAL_PROMPT)
     return " ".join(seg.text.strip() for seg in segments)
 
+def duck_audio():
+    global saved_volumes
+    saved_volumes = {}
+    try:
+        CoInitialize()
+        sessions = AudioUtilities.GetAllSessions()
+        for s in sessions:
+            if s.Process:
+                vol = s._ctl.QueryInterface(ISimpleAudioVolume)
+                saved_volumes[s.Process.pid] = vol.GetMasterVolume()
+                vol.SetMasterVolume(saved_volumes[s.Process.pid] * DUCK_LEVEL, None)
+        logging.info(f"Ducked {len(saved_volumes)} audio sessions")
+    except Exception as e:
+        logging.exception("Duck failed")
+    finally:
+        CoUninitialize()
+
+def restore_audio():
+    global saved_volumes
+    try:
+        CoInitialize()
+        sessions = AudioUtilities.GetAllSessions()
+        for s in sessions:
+            if s.Process and s.Process.pid in saved_volumes:
+                vol = s._ctl.QueryInterface(ISimpleAudioVolume)
+                vol.SetMasterVolume(saved_volumes[s.Process.pid], None)
+        logging.info(f"Restored {len(saved_volumes)} audio sessions")
+        saved_volumes = {}
+    except Exception as e:
+        logging.exception("Restore failed")
+    finally:
+        CoUninitialize()
+
 def on_press(key):
     global recording, audio_chunks
     try:
         if key == keyboard.Key.f9 and not recording:
             recording = True
             audio_chunks = []
+            duck_audio()
             logging.info("Recording started")
     except Exception as e:
         logging.exception("Error in on_press")
@@ -68,6 +106,7 @@ def on_release(key):
     try:
         if key == keyboard.Key.f9 and recording:
             recording = False
+            restore_audio()
             logging.info("Recording stopped, transcribing...")
 
             if audio_chunks:
