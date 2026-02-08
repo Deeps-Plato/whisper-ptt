@@ -396,6 +396,11 @@ def on_press(key):
                 restore_audio()
                 logging.info("F9 interrupted VAD recording")
             duck_audio()
+            # Cute press chirp (ascending blip)
+            def _beep_press():
+                winsound.Beep(784, 40)   # G5
+                winsound.Beep(1047, 50)  # C6
+            threading.Thread(target=_beep_press, daemon=True).start()
             logging.info("F9: recording")
 
         elif key == keyboard.Key.f10:
@@ -437,6 +442,11 @@ def on_release(key):
                 state = State.PROCESSING
 
             restore_audio()
+            # Cute release chirp (descending boop)
+            def _beep_release():
+                winsound.Beep(1047, 40)  # C6
+                winsound.Beep(659, 60)   # E5
+            threading.Thread(target=_beep_release, daemon=True).start()
             logging.info("F9: released, transcribing...")
 
             # Drain any remaining chunks from queue
