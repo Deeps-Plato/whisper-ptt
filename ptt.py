@@ -1,8 +1,9 @@
 """Push-to-talk + voice-activated dictation with faster-whisper and silero-vad.
 
 F9 hold: manual PTT (existing behavior + radio commands)
-F10: toggle voice activation on/off
-Wake word "send it": hands-free dictation with radio commands
+F10: toggle hot mic (no wake phrase, just talk → paste on silence)
+F8: toggle VAD on/off
+Wake word "send it": hands-free dictation, keeps recording until "over"
 
 Radio commands (work in both modes):
   break    → newline
@@ -50,23 +51,22 @@ DUCK_LEVEL = 0.1
 
 WAKE_PHRASE = "send it"
 VAD_THRESHOLD = 0.5
-WAKE_SILENCE_SECS = 0.8     # silence after wake phrase attempt
-DICTATE_SILENCE_SECS = 2.0  # silence to end dictation
-MAX_DICTATION_SECS = 30.0   # safety timeout
+SILENCE_CHECK_SECS = 2.0    # silence before checking for "over"/"disregard"
+MAX_DICTATION_SECS = 300.0  # 5 min safety timeout
 VAD_CHUNK = 512              # silero requires exactly 512 samples @ 16kHz
 
 # ── State machine ───────────────────────────────────────────────────
 class State(Enum):
     IDLE = 0
-    BUFFERING = 1    # VAD detected speech, collecting wake phrase
-    CHECKING = 2     # silence after buffering, checking for wake phrase
-    DICTATING = 3    # wake phrase matched, collecting dictation
-    PROCESSING = 4   # transcribing dictation
+    BUFFERING = 1    # VAD detected speech, recording
+    CHECKING = 2     # silence gap, transcribing to check for over/disregard
+    PROCESSING = 4   # transcribing F9 recording
     MANUAL = 5       # F9 held down
 
 state = State.IDLE
 state_lock = threading.Lock()
 vad_enabled = True
+hot_mic = False  # hot mic: no wake phrase needed, just talk
 audio_q = queue.Queue(maxsize=200)
 
 # ── Globals ─────────────────────────────────────────────────────────
@@ -173,6 +173,11 @@ def process_commands(text):
             result.append("\n")
         elif cleaned == "over" and i == len(words) - 1:
             press_enter = True
+            # Preserve ?/! from "over?" onto previous word
+            trailing = w[len(cleaned):]  # e.g. "?" from "over?"
+            keep = ''.join(c for c in trailing if c in '?!')
+            if keep and result:
+                result[-1] = result[-1].rstrip('.,;:?!') + keep
         elif cleaned == "correction":
             if result:
                 popped = result.pop()
@@ -191,14 +196,18 @@ def process_commands(text):
 
     final = final.strip()
     if not final:
-        return (None, False)
+        return (None, press_enter)
 
-    # Ensure each line ends with a period
+    # Clean up: capitalize first letter, strip orphaned punctuation, ensure period
     lines = final.split("\n")
     for i, line in enumerate(lines):
-        line = line.rstrip()
-        if line and line[-1] not in '.!?':
-            lines[i] = line + '.'
+        line = line.strip().lstrip(',;:').strip()
+        line = line.rstrip().rstrip(',;:')
+        if line:
+            line = line[0].upper() + line[1:]
+            if line[-1] not in '.!?':
+                line += '.'
+        lines[i] = line
     final = "\n".join(lines)
 
     return (final, press_enter)
@@ -206,19 +215,22 @@ def process_commands(text):
 # ── Paste helper ────────────────────────────────────────────────────
 def paste_text(text, press_enter=False):
     """Clipboard save/restore paste with optional Enter."""
-    if not text:
+    if not text and not press_enter:
         return
-    try:
-        old_clip = pyperclip.paste()
-    except Exception:
-        old_clip = ""
-    pyperclip.copy(text)
-    pyautogui.hotkey('ctrl', 'v')
-    time.sleep(0.05)
+    old_clip = None
+    if text:
+        try:
+            old_clip = pyperclip.paste()
+        except Exception:
+            old_clip = ""
+        pyperclip.copy(text)
+        pyautogui.hotkey('ctrl', 'v')
+        time.sleep(0.05)
     if press_enter:
         pyautogui.press('enter')
         time.sleep(0.05)
-    pyperclip.copy(old_clip)
+    if old_clip is not None:
+        pyperclip.copy(old_clip)
     logging.info(f"Pasted: {text!r} (enter={press_enter})")
 
 # ── Audio callback ──────────────────────────────────────────────────
@@ -239,7 +251,7 @@ def vad_monitor():
     speech_buf = np.array([], dtype=np.float32) # full audio for wake/dictation
     silence_time = 0.0
     speech_start = 0.0
-    dictate_heard_speech = False
+    ducked = False
     last_chunk_time = time.time()
 
     while True:
@@ -295,87 +307,78 @@ def vad_monitor():
             else:
                 silence_time += chunk_duration
 
-            if silence_time >= WAKE_SILENCE_SECS:
+            elapsed = now - speech_start
+
+            # On silence gap or max time, transcribe and check
+            if silence_time >= SILENCE_CHECK_SECS or elapsed >= MAX_DICTATION_SECS:
                 with state_lock:
                     state = State.CHECKING
-                logging.info("VAD: silence after buffer, checking wake phrase")
 
-                # Transcribe and check for wake phrase
                 text = transcribe(speech_buf)
                 normalized = re.sub(r'[.,!?;:\s]+', ' ', text.lower()).strip()
-                logging.info(f"Wake check: '{normalized}'")
+                logging.info(f"Check: '{normalized}'")
 
-                if WAKE_PHRASE in normalized:
-                    # Check if there's text after the wake phrase
-                    wake_idx = normalized.find(WAKE_PHRASE)
-                    remainder = normalized[wake_idx + len(WAKE_PHRASE):].strip()
+                has_wake = WAKE_PHRASE in normalized
 
-                    if remainder:
-                        # User said wake phrase + dictation in one go
-                        # Process the full text as dictation immediately
-                        logging.info(f"Wake + dictation in one shot: '{text}'")
-                        duck_audio()
-                        cleaned, press_enter = process_commands(text)
-                        if cleaned:
-                            paste_text(cleaned, press_enter)
-                        restore_audio()
+                # In normal mode, must contain wake phrase
+                if not hot_mic and not has_wake:
+                    if elapsed >= MAX_DICTATION_SECS:
+                        if ducked:
+                            restore_audio()
+                            ducked = False
                         with state_lock:
                             state = State.IDLE
                         speech_buf = np.array([], dtype=np.float32)
                         vad.reset_states()
-                        logging.info("One-shot dictation done, back to idle")
+                        logging.info("Max time, no wake phrase, back to idle")
                     else:
-                        # Just the wake phrase, wait for dictation
                         with state_lock:
-                            state = State.DICTATING
-                        duck_audio()
-                        speech_buf = np.array([], dtype=np.float32)
+                            state = State.BUFFERING
                         silence_time = 0.0
-                        dictate_heard_speech = False
-                        speech_start = now
-                        vad.reset_states()
-                        logging.info("Wake phrase matched! Dictating...")
-                else:
+                        logging.info("No wake phrase yet, keep buffering")
+                    continue
+
+                # Hot mic or wake phrase found — check for termination
+                words = normalized.split()
+                last_word = words[-1] if words else ""
+
+                if hot_mic:
+                    # Hot mic: process on every silence gap
+                    logging.info(f"Hot mic: '{text}'")
+                    duck_audio()
+                    cleaned, press_enter = process_commands(text)
+                    if cleaned or press_enter:
+                        paste_text(cleaned, press_enter)
+                    restore_audio()
                     with state_lock:
                         state = State.IDLE
                     speech_buf = np.array([], dtype=np.float32)
                     vad.reset_states()
-                    logging.info("No wake phrase match, back to idle")
-
-        elif cur == State.DICTATING:
-            speech_buf = np.concatenate([speech_buf, chunk])
-            if is_speech:
-                silence_time = 0.0
-                dictate_heard_speech = True
-            elif dictate_heard_speech:
-                # Only count silence after we've heard actual speech
-                silence_time += chunk_duration
-
-            elapsed = now - speech_start
-            if (dictate_heard_speech and silence_time >= DICTATE_SILENCE_SECS) or elapsed >= MAX_DICTATION_SECS:
-                with state_lock:
-                    state = State.PROCESSING
-
-                if elapsed >= MAX_DICTATION_SECS:
-                    logging.info("Max dictation time reached")
-                else:
-                    logging.info("Dictation silence detected")
-
-                # Transcribe dictation
-                if len(speech_buf) > 0:
-                    text = transcribe(speech_buf)
-                    logging.info(f"Dictation raw: {text}")
+                    logging.info("Hot mic done, back to idle")
+                elif last_word == "over" or last_word == "disregard" or elapsed >= MAX_DICTATION_SECS:
+                    # Done! Process the full text
+                    logging.info(f"Complete utterance: '{text}'")
+                    if not ducked:
+                        duck_audio()
                     cleaned, press_enter = process_commands(text)
-                    if cleaned:
+                    if cleaned or press_enter:
                         paste_text(cleaned, press_enter)
-
-                restore_audio()
-                speech_buf = np.array([], dtype=np.float32)
-                vad.reset_states()
-                silence_time = 0.0
-                with state_lock:
-                    state = State.IDLE
-                logging.info("Back to idle")
+                    restore_audio()
+                    ducked = False
+                    with state_lock:
+                        state = State.IDLE
+                    speech_buf = np.array([], dtype=np.float32)
+                    vad.reset_states()
+                    logging.info("Done, back to idle")
+                else:
+                    # Wake phrase found but no "over" yet — keep recording
+                    with state_lock:
+                        state = State.BUFFERING
+                    silence_time = 0.0
+                    logging.info("Wake phrase found, waiting for 'over'...")
+                    if not ducked:
+                        duck_audio()
+                        ducked = True
 
 # ── Keyboard handlers ──────────────────────────────────────────────
 def on_press(key):
@@ -389,17 +392,34 @@ def on_press(key):
                 prev = state
                 state = State.MANUAL
             manual_chunks = []
-            if prev == State.DICTATING:
+            if prev in (State.BUFFERING, State.CHECKING):
                 restore_audio()
-                logging.info("F9 interrupted dictation")
+                logging.info("F9 interrupted VAD recording")
             duck_audio()
             logging.info("F9: recording")
 
         elif key == keyboard.Key.f10:
+            global hot_mic
+            hot_mic = not hot_mic
+            logging.info(f"Hot mic {'ON' if hot_mic else 'OFF'}")
+            # Double beep = on, single low = off
+            def _beep_hot():
+                if hot_mic:
+                    # Sticky keys on: ascending
+                    winsound.Beep(523, 80)
+                    winsound.Beep(587, 80)
+                    winsound.Beep(659, 80)
+                else:
+                    # Sticky keys off: descending
+                    winsound.Beep(659, 80)
+                    winsound.Beep(587, 80)
+                    winsound.Beep(523, 80)
+            threading.Thread(target=_beep_hot, daemon=True).start()
+
+        elif key == keyboard.Key.f8:
             global vad_enabled
             vad_enabled = not vad_enabled
             logging.info(f"VAD {'enabled' if vad_enabled else 'disabled'}")
-            # High beep = on, low beep = off
             threading.Thread(target=winsound.Beep,
                              args=(800 if vad_enabled else 400, 150),
                              daemon=True).start()
@@ -432,7 +452,7 @@ def on_release(key):
                 if text.strip():
                     logging.info(f"F9 raw: {text}")
                     cleaned, press_enter = process_commands(text)
-                    if cleaned:
+                    if cleaned or press_enter:
                         paste_text(cleaned, press_enter)
                 else:
                     logging.info("No speech detected")
