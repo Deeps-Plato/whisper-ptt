@@ -193,6 +193,14 @@ def process_commands(text):
     if not final:
         return (None, False)
 
+    # Ensure each line ends with a period
+    lines = final.split("\n")
+    for i, line in enumerate(lines):
+        line = line.rstrip()
+        if line and line[-1] not in '.!?':
+            lines[i] = line + '.'
+    final = "\n".join(lines)
+
     return (final, press_enter)
 
 # ── Paste helper ────────────────────────────────────────────────────
