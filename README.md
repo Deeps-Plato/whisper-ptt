@@ -6,6 +6,53 @@ Push-to-talk transcription using faster-whisper with CUDA acceleration.
 
 Hold **F9** to record, release to transcribe. Text is auto-pasted at cursor.
 
+### Radio Commands
+
+Commands work in both manual PTT (F9) and voice-activated modes:
+
+| Command | Effect | Example |
+|---------|--------|---------|
+| `break` | Newline | "Line one break line two" → "Line one\nLine two" |
+| `over` | Submit (press Enter) | "Send message over" → types text + presses Enter |
+| `correction` | Delete previous word | "Hello world correction there" → "Hello there" |
+| `disregard` | Cancel utterance | "Never mind disregard" → nothing pasted |
+
+### Spoken Punctuation
+
+Say punctuation names to insert symbols:
+
+**Single-word:**
+- `slash` → `/`
+- `hyphen` → `-`
+- `comma` → `,`
+- `period` → `.`
+- `colon` → `:`
+- `semicolon` → `;`
+- `at` → `@`
+- `caret` → `^`
+- `ampersand` → `&`
+- `asterisk` → `*`
+- `plus` → `+`
+- `equals` → `=`
+- `pipe` → `|`
+- `backslash` → `\`
+- `tilde` → `~`
+- `backtick` → `` ` ``
+- `underscore` → `_`
+
+**Two-word phrases:**
+- `question mark` → `?`
+- `exclamation point` / `exclamation mark` → `!`
+- `home slash` → `~/`
+- `open bracket` / `close bracket` → `[` / `]`
+- `open paren` / `close paren` → `(` / `)`
+- `open brace` / `close brace` → `{` / `}`
+- `hash tag` → `#`
+- `dollar sign` → `$`
+- `percent sign` → `%`
+
+**Example:** "cd home slash Documents slash openclaw hyphen surgery" → `cd ~/Documents/openclaw-surgery`
+
 ## Files
 
 | File | Purpose |
