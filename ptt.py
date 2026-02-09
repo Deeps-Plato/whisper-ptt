@@ -46,7 +46,7 @@ from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
 SAMPLE_RATE = 16000
 DEVICE_NAME = "Volt 2"
 MODEL_SIZE = "base"
-INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL."
+INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL. openclaw, claude, claude-code, claw-pc, Ableton, Roblox, audiobooks, channel-icons, claudedocs, cleo, cleo_test, dippi, drones, everdo, fuzzy_launcher_android, icon-generator-android, logan, moltbot, obsidian_mcp, openclaw-surgery, opencode, rei-flow, rei-local-bot, rei-output, research-staging, sweethome3d, voice_agent_gst, web_ez, whisper-ptt. Punctuation: slash /, hyphen -, brackets [], parentheses (), braces {}, hash #, at @, dollar $, percent %, caret ^, ampersand &, asterisk *, plus +, equals =, pipe |, backslash \\, tilde ~, backtick `, home slash ~/."
 DUCK_LEVEL = 0.1
 
 WAKE_PHRASE = "send it"
@@ -163,13 +163,72 @@ def process_commands(text):
             logging.info("Disregard command")
             return (None, False)
 
+    # Merge spoken punctuation/symbols into tokens before main loop
+    # e.g. "question mark" → "?", "home slash" → "~/"
+    REPLACEMENTS_2WORD = {
+        "question mark": "?",
+        "exclamation point": "!",
+        "exclamation mark": "!",
+        "home slash": "~/",
+        "open bracket": "[",
+        "close bracket": "]",
+        "open paren": "(",
+        "close paren": ")",
+        "open brace": "{",
+        "close brace": "}",
+        "hash tag": "#",
+        "dollar sign": "$",
+        "percent sign": "%",
+    }
+    REPLACEMENTS_1WORD = {
+        "comma": ",",
+        "slash": "/",
+        "hyphen": "-",
+        "period": ".",
+        "colon": ":",
+        "semicolon": ";",
+        "at": "@",
+        "caret": "^",
+        "ampersand": "&",
+        "asterisk": "*",
+        "plus": "+",
+        "equals": "=",
+        "pipe": "|",
+        "backslash": "\\",
+        "tilde": "~",
+        "backtick": "`",
+        "underscore": "_",
+    }
+
+    merged = []
+    i = 0
+    while i < len(words):
+        pair = strip_punctuation(words[i]).lower()
+        if i + 1 < len(words):
+            pair2 = pair + " " + strip_punctuation(words[i+1]).lower()
+            if pair2 in REPLACEMENTS_2WORD:
+                merged.append(REPLACEMENTS_2WORD[pair2])
+                i += 2
+                continue
+        if pair in REPLACEMENTS_1WORD:
+            merged.append(REPLACEMENTS_1WORD[pair])
+        else:
+            merged.append(words[i])
+        i += 1
+    words = merged
+
     press_enter = False
     result = []
 
     for i, w in enumerate(words):
         cleaned = strip_punctuation(w).lower()
 
-        if cleaned == "break":
+        if w in ("?", "!", ","):
+            # Spoken punctuation: attach to previous word
+            if result:
+                result[-1] = result[-1].rstrip('.,;:?!') + w
+            continue
+        elif cleaned == "break":
             result.append("\n")
         elif cleaned == "over" and i == len(words) - 1:
             press_enter = True
