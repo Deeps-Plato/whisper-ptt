@@ -181,6 +181,7 @@ def process_commands(text):
         "percent sign": "%",
     }
     REPLACEMENTS_1WORD = {
+        "homeslash": "~/",
         "comma": ",",
         "dot": ".",
         "slash": "/",
