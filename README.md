@@ -28,7 +28,6 @@ Say punctuation names to insert symbols:
 - `period` → `.`
 - `colon` → `:`
 - `semicolon` → `;`
-- `at` → `@`
 - `caret` → `^`
 - `ampersand` → `&`
 - `asterisk` → `*`
@@ -48,6 +47,7 @@ Say punctuation names to insert symbols:
 - `open paren` / `close paren` → `(` / `)`
 - `open brace` / `close brace` → `{` / `}`
 - `hash tag` → `#`
+- `at symbol` / `at sign` → `@`
 - `dollar sign` → `$`
 - `percent sign` → `%`
 
