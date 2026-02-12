@@ -4,7 +4,7 @@ Push-to-talk transcription using faster-whisper with CUDA acceleration.
 
 ## Usage
 
-Hold **F9** to record, release to transcribe. Text is auto-pasted at cursor.
+Hold **F9** or **middle mouse button** to record, release to transcribe. Text is auto-pasted at cursor.
 
 ### Radio Commands
 
@@ -130,23 +130,20 @@ taskkill /F /IM pythonw.exe && schtasks /Run /TN WhisperPTT
 schtasks /Delete /TN WhisperPTT /F
 ```
 
-### Agent Restart Procedure
+### Agent Restart Procedure (from WSL)
 
-After editing `ptt.py`, restart to apply changes:
+After editing `ptt.py`, restart to apply changes. The kill may report "access denied" or "not found" but still succeed — ignore the exit code and proceed to start:
 
 ```bash
-cmd.exe /c "taskkill /F /IM pythonw.exe && schtasks /Run /TN WhisperPTT"
+cmd.exe /c "taskkill /F /IM pythonw.exe" 2>&1; cmd.exe /c "schtasks /Run /TN WhisperPTT"
 ```
 
-If `schtasks /Run` fails with "file not found" (`0x80070002`), the task needs the full pythonw path:
+Verify it's running:
 ```bash
-cmd.exe /c "taskkill /F /IM pythonw.exe"
-cmd.exe /c "schtasks /Run /TN WhisperPTT"
-# If that fails, start directly:
-cmd.exe /c "start /B pythonw.exe C:\Users\admin\Documents\Claude\whisper-ptt\ptt.py"
+cmd.exe /c "tasklist | findstr pythonw"
 ```
 
-Verify it's running: `cmd.exe /c "tasklist | findstr pythonw"`
+**Do NOT chain with `&&`** — the kill command returns nonzero even on success when called from WSL.
 
 **Why not a real Windows service?** Services run in session 0 with no desktop access — can't hook keyboard or paste to clipboard.
 
