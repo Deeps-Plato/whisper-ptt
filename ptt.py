@@ -1,6 +1,6 @@
 """Push-to-talk + voice-activated dictation with faster-whisper and silero-vad.
 
-F9 hold: manual PTT (existing behavior + radio commands)
+F9 hold OR middle mouse button hold: manual PTT (radio commands)
 F10: toggle hot mic (no wake phrase, just talk → paste on silence)
 F8: toggle VAD on/off
 Wake word "send it": hands-free dictation, keeps recording until "over"
@@ -36,7 +36,7 @@ import torch
 import sounddevice as sd
 from faster_whisper import WhisperModel
 from silero_vad import load_silero_vad
-from pynput import keyboard
+from pynput import keyboard, mouse
 import pyperclip
 import pyautogui
 from comtypes import CoInitialize, CoUninitialize
@@ -188,7 +188,7 @@ def process_commands(text):
         "dot": ".",
         "slash": "/",
         "hyphen": "-",
-        "period": ".",
+        "period": ". ",
         "colon": ":",
         "semicolon": ";",
         "caret": "^",
@@ -271,6 +271,10 @@ def process_commands(text):
                 line += '.'
         lines[i] = line
     final = "\n".join(lines)
+
+    # Ensure trailing space after final period
+    if final.endswith('.'):
+        final += ' '
 
     return (final, press_enter)
 
@@ -538,6 +542,72 @@ def on_release(key):
     except Exception as e:
         logging.exception("Error in on_release")
 
+def on_click(x, y, button, pressed):
+    """Mouse button handler - middle button acts as PTT."""
+    global state, manual_chunks
+    try:
+        if button == mouse.Button.middle:
+            if pressed:
+                # Middle button pressed - start recording
+                with state_lock:
+                    if state == State.MANUAL:
+                        return  # already recording
+                    # Interrupt any VAD state
+                    prev = state
+                    state = State.MANUAL
+                manual_chunks = []
+                if prev in (State.BUFFERING, State.CHECKING):
+                    restore_audio()
+                    logging.info("Middle mouse interrupted VAD recording")
+                duck_audio()
+                # Cute press chirp (ascending blip)
+                def _beep_press():
+                    winsound.Beep(784, 40)   # G5
+                    winsound.Beep(1047, 50)  # C6
+                threading.Thread(target=_beep_press, daemon=True).start()
+                logging.info("Middle mouse: recording")
+            else:
+                # Middle button released - transcribe
+                with state_lock:
+                    if state != State.MANUAL:
+                        return
+                    state = State.PROCESSING
+
+                restore_audio()
+                # Cute release chirp (descending boop)
+                def _beep_release():
+                    winsound.Beep(1047, 40)  # C6
+                    winsound.Beep(659, 60)   # E5
+                threading.Thread(target=_beep_release, daemon=True).start()
+                logging.info("Middle mouse: released, transcribing...")
+
+                # Drain any remaining chunks from queue
+                while True:
+                    try:
+                        manual_chunks.append(audio_q.get_nowait())
+                    except queue.Empty:
+                        break
+
+                if manual_chunks:
+                    audio = np.concatenate(manual_chunks)
+                    text = transcribe(audio)
+                    if text.strip():
+                        logging.info(f"Middle mouse raw: {text}")
+                        cleaned, press_enter = process_commands(text)
+                        if cleaned or press_enter:
+                            paste_text(cleaned, press_enter)
+                    else:
+                        logging.info("No speech detected")
+                else:
+                    logging.info("No audio captured")
+
+                manual_chunks = []
+                with state_lock:
+                    state = State.IDLE
+
+    except Exception as e:
+        logging.exception("Error in on_click")
+
 # ── Main ────────────────────────────────────────────────────────────
 def run_listener():
     global vad_model
@@ -566,8 +636,10 @@ def run_listener():
 
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, device=device,
                         callback=audio_callback, blocksize=1600):
-        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-            listener.join()
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as kb_listener, \
+             mouse.Listener(on_click=on_click) as mouse_listener:
+            kb_listener.join()
+            mouse_listener.join()
     return True
 
 def main():
