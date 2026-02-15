@@ -2,6 +2,33 @@
 
 Push-to-talk transcription using faster-whisper with CUDA acceleration.
 
+## Setup
+
+Requires Windows, Python 3.10+, NVIDIA GPU with CUDA.
+
+```bash
+# 1. Clone
+git clone https://github.com/mithril-logic/whisper-ptt.git
+cd whisper-ptt
+
+# 2. Install PyTorch with CUDA (pick your CUDA version: https://pytorch.org/get-started/locally/)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# 3. Install dependencies
+pip install faster-whisper silero-vad pynput pyperclip pyautogui sounddevice numpy pycaw comtypes
+
+# 4. Find your microphone name
+python -c "import sounddevice; print(sounddevice.query_devices())"
+
+# 5. Edit ptt.py — set DEVICE_NAME to your mic (line 47)
+# Also customize INITIAL_PROMPT with your own vocab (line 49)
+
+# 6. Run
+python ptt.py
+```
+
+First run downloads the Whisper model (~150MB for base). Logs go to `%TEMP%\whisper-ptt.log`.
+
 ## Usage
 
 Hold **F9** or **middle mouse button** to record, release to transcribe. Text is auto-pasted at cursor.
@@ -67,12 +94,23 @@ Say punctuation names to insert symbols:
 Edit `ptt.py` to change settings:
 
 ```python
-SAMPLE_RATE = 16000
-DEVICE_NAME = "Volt 2"        # Audio input device
+DEVICE_NAME = "Volt 2"        # Audio input device — change to your mic
 MODEL_SIZE = "base"           # tiny, base, small, medium, large-v3
-INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL."
+INITIAL_PROMPT = "..."        # Custom vocab for better transcription accuracy
 DUCK_LEVEL = 0.1              # Audio ducking: 0.0 = mute, 1.0 = no change
 ```
+
+### Hotkeys
+
+Hotkeys are in the `on_press`/`on_release`/`on_click` functions near the bottom of `ptt.py`. Defaults:
+
+| Key | Action |
+|-----|--------|
+| F9 / middle mouse | Hold to record, release to transcribe (PTT) |
+| F10 | Toggle hot mic (continuous voice-activated dictation) |
+| F8 | Toggle VAD on/off |
+
+To change, replace `keyboard.Key.f9` etc. with your preferred key from [pynput's Key enum](https://pynput.readthedocs.io/en/latest/keyboard.html#pynput.keyboard.Key).
 
 ## Adding Words to Prompt
 
@@ -84,29 +122,12 @@ INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL, NewWord, AnotherTer
 
 Restart the script after changes.
 
-## Requirements
-
-- Python 3.10+
-- CUDA-capable GPU
-- faster-whisper (`pip install faster-whisper`)
-- pynput (`pip install pynput`)
-- pyperclip (`pip install pyperclip`)
-- pyautogui (`pip install pyautogui`)
-- sounddevice (`pip install sounddevice`)
-- numpy
-- pycaw (`pip install pycaw`)
-
 ## Running
 
 ```bash
-# With console (for debugging)
-python ptt.py
-
-# Headless (no console window)
-pythonw ptt.py
+python ptt.py          # with console (for debugging)
+pythonw ptt.py         # headless (no console window)
 ```
-
-Logs written to `%TEMP%\whisper-ptt.log`
 
 ## Service (Auto-Start)
 
