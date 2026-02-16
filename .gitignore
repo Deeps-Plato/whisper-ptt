@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+# Agent docs & secrets
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+.env
+.env.*
