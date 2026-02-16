@@ -153,7 +153,9 @@ schtasks /Delete /TN WhisperPTT /F
 
 ### Agent Restart Procedure (from WSL)
 
-After editing `ptt.py`, restart to apply changes. The kill may report "access denied" or "not found" but still succeed — ignore the exit code and proceed to start:
+**When user reports PTT is down/offline/not working, immediately run the restart command below — no confirmation needed.**
+
+Kill + restart. The kill may report "access denied" or "not found" but still succeeds — ignore the exit code:
 
 ```bash
 cmd.exe /c "taskkill /F /IM pythonw.exe" 2>&1; cmd.exe /c "schtasks /Run /TN WhisperPTT"
