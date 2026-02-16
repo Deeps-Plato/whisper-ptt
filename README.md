@@ -171,7 +171,6 @@ cmd.exe /c "tasklist | findstr pythonw"
 **Notes:**
 - Do NOT chain kill + start with `&&` — kill returns nonzero even on success from WSL
 - Uses `$CLAUDE_PROJECTS` env var, not hardcoded path
-- Launches directly via `pythonw.exe` (scheduled task path may be stale)
 
 **Why not a real Windows service?** Services run in session 0 with no desktop access — can't hook keyboard or paste to clipboard.
 
