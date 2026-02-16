@@ -85,6 +85,7 @@ Say punctuation names to insert symbols:
 | File | Purpose |
 |------|---------|
 | `ptt.py` | Main script - faster-whisper with pynput hotkey listener |
+| `start-ptt.bat` | Launcher for scheduled task (uses `%~dp0` for portable path) |
 | `record.bat` | FFmpeg recording (used by AHK fallback) |
 | `transcribe.bat` | whisper-cli transcription (used by AHK fallback) |
 | `whisper-ptt.ahk` | AutoHotkey fallback script |
@@ -131,7 +132,7 @@ pythonw ptt.py         # headless (no console window)
 
 ## Service (Auto-Start)
 
-PTT runs as a Windows Task Scheduler task (`WhisperPTT`) that starts at logon. Runs in user session (not session 0) so it has keyboard/clipboard access. Auto-restarts up to 3x on crash with 1min interval.
+PTT runs as a Windows Task Scheduler task (`WhisperPTT`) that starts at logon via `start-ptt.bat`. Runs in user session (not session 0) so it has keyboard/clipboard access. Auto-restarts up to 3x on crash with 1min interval.
 
 ```bash
 # Check status
@@ -158,7 +159,8 @@ schtasks /Delete /TN WhisperPTT /F
 Kill + restart. The kill may report "access denied" or "not found" but still succeeds — ignore the exit code:
 
 ```bash
-cmd.exe /c "taskkill /F /IM pythonw.exe" 2>&1; cmd.exe /c "schtasks /Run /TN WhisperPTT"
+PTT_WIN=$(wslpath -w "$CLAUDE_PROJECTS/whisper-ptt/ptt.py")
+cmd.exe /c "taskkill /F /IM pythonw.exe" 2>&1; cmd.exe /c "pythonw.exe $PTT_WIN"
 ```
 
 Verify it's running:
@@ -166,7 +168,10 @@ Verify it's running:
 cmd.exe /c "tasklist | findstr pythonw"
 ```
 
-**Do NOT chain with `&&`** — the kill command returns nonzero even on success when called from WSL.
+**Notes:**
+- Do NOT chain kill + start with `&&` — kill returns nonzero even on success from WSL
+- Uses `$CLAUDE_PROJECTS` env var, not hardcoded path
+- Launches directly via `pythonw.exe` (scheduled task path may be stale)
 
 **Why not a real Windows service?** Services run in session 0 with no desktop access — can't hook keyboard or paste to clipboard.
 
