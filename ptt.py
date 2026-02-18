@@ -54,6 +54,7 @@ VAD_THRESHOLD = 0.5
 SILENCE_CHECK_SECS = 2.0    # silence before checking for "over"/"disregard"
 MAX_DICTATION_SECS = 300.0  # 5 min safety timeout
 VAD_CHUNK = 512              # silero requires exactly 512 samples @ 16kHz
+VAD_COOLDOWN_SECS = 5.0      # pause VAD after failed wake-phrase check
 
 # ── State machine ───────────────────────────────────────────────────
 class State(Enum):
@@ -65,7 +66,7 @@ class State(Enum):
 
 state = State.IDLE
 state_lock = threading.Lock()
-vad_enabled = True
+vad_enabled = False  # F8 to enable; default off to avoid GPU churn
 hot_mic = False  # hot mic: no wake phrase needed, just talk
 audio_q = queue.Queue(maxsize=200)
 
@@ -319,6 +320,7 @@ def vad_monitor():
     speech_start = 0.0
     ducked = False
     last_chunk_time = time.time()
+    cooldown_until = 0.0  # timestamp: ignore VAD until this time
 
     while True:
         try:
@@ -342,6 +344,10 @@ def vad_monitor():
             continue
 
         if not vad_enabled and cur == State.IDLE:
+            continue
+
+        # Cooldown after failed wake-phrase check to avoid GPU churn
+        if cur == State.IDLE and now < cooldown_until:
             continue
 
         # Accumulate and process in 512-sample chunks
@@ -396,7 +402,8 @@ def vad_monitor():
                             state = State.IDLE
                         speech_buf = np.array([], dtype=np.float32)
                         vad.reset_states()
-                        logging.info("Max time, no wake phrase, back to idle")
+                        cooldown_until = time.time() + VAD_COOLDOWN_SECS
+                        logging.info("Max time, no wake phrase, cooldown %ss", VAD_COOLDOWN_SECS)
                     else:
                         with state_lock:
                             state = State.BUFFERING

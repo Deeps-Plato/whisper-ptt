@@ -14,7 +14,7 @@ Continuous VAD-driven dictation. No wake phrase needed — just talk. On silence
 Say **"send it"** to begin dictation. Keeps recording through silence gaps until you say **"over"** or **"disregard"**. Audio ducks after wake phrase detected. 5min safety timeout.
 
 ### VAD Toggle (F8)
-Enables/disables voice activity detection entirely. High beep = on, low beep = off. When off, only manual PTT works.
+Enables/disables voice activity detection entirely. High beep = on, low beep = off. When off, only manual PTT works. **Default: off** (prevents GPU churn from ambient noise triggering repeated Whisper transcriptions).
 
 ## State Machine
 
@@ -128,6 +128,7 @@ Not a replacement mapping — just vocabulary hints. The actual symbol replaceme
 - **VAD**: Silero VAD, 512-sample chunks, threshold 0.5
 - **Transcription**: faster-whisper `base` model, CUDA float16, beam_size=5, vad_filter=true
 - **Stream**: sounddevice InputStream with 1600-sample blocks, callback pushes to queue (max 200)
+- **Cooldown**: 5s pause (`VAD_COOLDOWN_SECS`) after failed wake-phrase cycle hits max time, prevents GPU churn
 - **Threading**: VAD monitor runs in daemon thread, processes queue continuously
 
 ## Service Configuration

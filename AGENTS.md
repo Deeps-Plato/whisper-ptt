@@ -29,6 +29,16 @@ pythonw ptt.py      # headless (deployed as scheduled task "WhisperPTT")
 - F10: toggle hot mic (continuous VAD)
 - F8: toggle VAD on/off
 
+## Restart (from WSL)
+When user reports PTT is down/offline/not working, run immediately — no confirmation needed.
+```bash
+PTT_WIN=$(wslpath -w "$CLAUDE_PROJECTS/whisper-ptt/ptt.py")
+cmd.exe /c "taskkill /F /IM pythonw.exe" 2>&1; cmd.exe /c "pythonw.exe $PTT_WIN"
+```
+- Do NOT use `&&` — kill returns nonzero even on success from WSL
+- "Access denied" / "not found" errors are normal — ignore them
+- Verify: `cmd.exe /c "tasklist | findstr pythonw"`
+
 ## Constraints
 - Windows-only (pycaw, pyautogui, scheduled task)
 - Requires CUDA toolkit + PyTorch CUDA build
