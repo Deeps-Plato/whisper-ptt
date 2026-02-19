@@ -5,7 +5,7 @@ F10: toggle hot mic (no wake phrase, just talk → paste on silence)
 F8: toggle VAD on/off
 Wake word "send it": hands-free dictation, keeps recording until "over"
 
-Radio commands (work in both modes):
+Radio commands (voice-activation only — VAD/hot mic, NOT manual PTT):
   break    → newline
   over     → submit (Enter key) — only at end of utterance
   correction → delete previous word
@@ -138,9 +138,11 @@ def strip_punctuation(word):
     """Strip trailing punctuation that whisper often adds."""
     return re.sub(r'[.,!?;:]+$', '', word)
 
-def process_commands(text):
+def process_commands(text, radio=True):
     """Process radio commands. Returns (cleaned_text, press_enter).
 
+    radio=True enables break/over/correction/disregard (voice-activation only).
+    radio=False skips them (manual PTT — just transcribe literally).
     Returns (None, False) for disregard.
     """
     if not text or not text.strip():
@@ -158,11 +160,12 @@ def process_commands(text):
     if not words:
         return (None, False)
 
-    # Check for disregard anywhere
-    for w in words:
-        if strip_punctuation(w).lower() == "disregard":
-            logging.info("Disregard command")
-            return (None, False)
+    # Check for disregard anywhere (voice-activation only)
+    if radio:
+        for w in words:
+            if strip_punctuation(w).lower() == "disregard":
+                logging.info("Disregard command")
+                return (None, False)
 
     # Merge spoken punctuation/symbols into tokens before main loop
     # e.g. "question mark" → "?", "home slash" → "~/"
@@ -232,16 +235,16 @@ def process_commands(text):
             if result:
                 result[-1] = result[-1].rstrip('.,;:?!') + w
             continue
-        elif cleaned == "break":
+        elif radio and cleaned == "break":
             result.append("\n")
-        elif cleaned == "over" and i == len(words) - 1:
+        elif radio and cleaned == "over" and i == len(words) - 1:
             press_enter = True
             # Preserve ?/! from "over?" onto previous word
             trailing = w[len(cleaned):]  # e.g. "?" from "over?"
             keep = ''.join(c for c in trailing if c in '?!')
             if keep and result:
                 result[-1] = result[-1].rstrip('.,;:?!') + keep
-        elif cleaned == "correction":
+        elif radio and cleaned == "correction":
             if result:
                 popped = result.pop()
                 logging.info(f"Correction: removed '{popped}'")
@@ -534,7 +537,7 @@ def on_release(key):
                 text = transcribe(audio)
                 if text.strip():
                     logging.info(f"F9 raw: {text}")
-                    cleaned, press_enter = process_commands(text)
+                    cleaned, press_enter = process_commands(text, radio=False)
                     if cleaned or press_enter:
                         paste_text(cleaned, press_enter)
                 else:
@@ -600,7 +603,7 @@ def on_click(x, y, button, pressed):
                     text = transcribe(audio)
                     if text.strip():
                         logging.info(f"Middle mouse raw: {text}")
-                        cleaned, press_enter = process_commands(text)
+                        cleaned, press_enter = process_commands(text, radio=False)
                         if cleaned or press_enter:
                             paste_text(cleaned, press_enter)
                     else:
