@@ -15,8 +15,11 @@ Push-to-talk voice transcription with CUDA-accelerated Whisper.
 ## Run
 ```bash
 python ptt.py       # with console
-pythonw ptt.py      # headless (deployed as scheduled task "WhisperPTT")
+pythonw ptt.py      # headless
 ```
+
+## Service
+Scheduled task `WhisperPTT` runs `pythonw.exe ptt.py` directly at logon (no bat wrapper). Auto-restarts up to 3x on crash, 1min interval. Runs in user session for keyboard/clipboard access.
 
 ## Config (top of ptt.py)
 - `DEVICE_NAME` — mic name (default: "Volt 2")

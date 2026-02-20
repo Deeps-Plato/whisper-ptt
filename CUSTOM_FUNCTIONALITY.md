@@ -133,7 +133,7 @@ Not a replacement mapping — just vocabulary hints. The actual symbol replaceme
 
 ## Service Configuration
 
-Windows Task Scheduler task `WhisperPTT`. Runs `pythonw.exe ptt.py` (headless) at logon in user session. Auto-restarts up to 3x on crash, 1min interval. Not a Windows service (needs desktop access for keyboard hooks + clipboard).
+Windows Task Scheduler task `WhisperPTT`. Runs `pythonw.exe ptt.py` directly at logon (no bat wrapper — avoids visible cmd window). Auto-restarts up to 3x on crash, 1min interval. Not a Windows service (needs desktop access for keyboard hooks + clipboard).
 
 ## Legacy Fallback (AHK)
 

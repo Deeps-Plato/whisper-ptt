@@ -85,7 +85,7 @@ Say punctuation names to insert symbols:
 | File | Purpose |
 |------|---------|
 | `ptt.py` | Main script - faster-whisper with pynput hotkey listener |
-| `start-ptt.bat` | Launcher for scheduled task (uses `%~dp0` for portable path) |
+| `start-ptt.bat` | Legacy launcher (scheduled task now calls pythonw directly) |
 | `record.bat` | FFmpeg recording (used by AHK fallback) |
 | `transcribe.bat` | whisper-cli transcription (used by AHK fallback) |
 | `whisper-ptt.ahk` | AutoHotkey fallback script |
@@ -132,7 +132,7 @@ pythonw ptt.py         # headless (no console window)
 
 ## Service (Auto-Start)
 
-PTT runs as a Windows Task Scheduler task (`WhisperPTT`) that starts at logon via `start-ptt.bat`. Runs in user session (not session 0) so it has keyboard/clipboard access. Auto-restarts up to 3x on crash with 1min interval.
+PTT runs as a Windows Task Scheduler task (`WhisperPTT`) that starts `pythonw.exe ptt.py` directly at logon. No bat wrapper — avoids a visible cmd window on boot. Runs in user session (not session 0) so it has keyboard/clipboard access. Auto-restarts up to 3x on crash with 1min interval.
 
 ```bash
 # Check status
