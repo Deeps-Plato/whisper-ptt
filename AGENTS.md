@@ -32,15 +32,26 @@ Scheduled task `WhisperPTT` runs `pythonw.exe ptt.py` directly at logon (no bat 
 - F10: toggle hot mic (continuous VAD)
 - F8: toggle VAD on/off
 
-## Restart (from WSL)
+## Restart (Hard Rule)
 When user reports PTT is down/offline/not working, run immediately — no confirmation needed.
+Use exactly one of the following blocks based on your current shell. Do not mix.
+
+### WSL
 ```bash
 PTT_WIN=$(wslpath -w "$CLAUDE_PROJECTS/whisper-ptt/ptt.py")
-cmd.exe /c "taskkill /F /IM pythonw.exe" 2>&1; cmd.exe /c "pythonw.exe $PTT_WIN"
+PYW="C:\\Users\\admin\\AppData\\Local\\Programs\\Python\\Python312\\pythonw.exe"
+cmd.exe /c "taskkill /F /IM pythonw.exe" 2>&1; cmd.exe /c "$PYW $PTT_WIN"
+cmd.exe /c "tasklist | findstr pythonw"
 ```
 - Do NOT use `&&` — kill returns nonzero even on success from WSL
 - "Access denied" / "not found" errors are normal — ignore them
-- Verify: `cmd.exe /c "tasklist | findstr pythonw"`
+
+### Windows (PowerShell or CMD)
+```powershell
+schtasks /run /tn WhisperPTT
+Start-Sleep -Seconds 2
+cmd.exe /c "tasklist | findstr pythonw"
+```
 
 ## Constraints
 - Windows-only (pycaw, pyautogui, scheduled task)

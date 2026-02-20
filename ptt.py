@@ -48,6 +48,7 @@ DEVICE_NAME = "Volt 2"
 MODEL_SIZE = "base"
 INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL, Dart. openclaw, claude, claude-code, claude-flow, .openclaw, Ableton, Roblox, audiobooks, channel-icons, claudedocs, cleo, cleo_test, dippi, drones, everdo, fuzzy_launcher_android, icon-generator-android, logan, moltbot, obsidian_mcp, opencode, rei-flow, rei-local-bot, rei-output, research-staging, sweethome3d, voice_agent_gst, web_ez, whisper-ptt, @rei. Punctuation: dot ., slash /, hyphen -, brackets [], parentheses (), braces {}, hash #, at @, dollar $, percent %, caret ^, ampersand &, asterisk *, plus +, equals =, pipe |, backslash \\, tilde ~, backtick `, home slash ~/."
 DUCK_LEVEL = 0.1
+BEEP_BACKEND = "winsound"  # "sounddevice" or "winsound"
 
 WAKE_PHRASE = "send it"
 VAD_THRESHOLD = 0.5
@@ -66,6 +67,30 @@ class State(Enum):
 
 state = State.IDLE
 state_lock = threading.Lock()
+
+# Serialize beeps to avoid overlap/stutter and log failures
+beep_lock = threading.Lock()
+
+def _sd_beep(tones, sample_rate=44100):
+    for freq, dur_ms in tones:
+        duration = max(dur_ms, 1) / 1000.0
+        t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+        wave = (0.15 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+        sd.play(wave, samplerate=sample_rate, blocking=True)
+
+def _play_beeps(tones):
+    try:
+        with beep_lock:
+            if BEEP_BACKEND == "winsound":
+                for freq, dur in tones:
+                    winsound.Beep(freq, dur)
+            else:
+                _sd_beep(tones)
+    except Exception:
+        logging.exception("Beep failed")
+
+def beep_async(tones):
+    threading.Thread(target=_play_beeps, args=(tones,), daemon=True).start()
 vad_enabled = False  # F8 to enable; default off to avoid GPU churn
 hot_mic = False  # hot mic: no wake phrase needed, just talk
 audio_q = queue.Queue(maxsize=200)
@@ -473,10 +498,7 @@ def on_press(key):
                 logging.info("F9 interrupted VAD recording")
             duck_audio()
             # Cute press chirp (ascending blip)
-            def _beep_press():
-                winsound.Beep(784, 40)   # G5
-                winsound.Beep(1047, 50)  # C6
-            threading.Thread(target=_beep_press, daemon=True).start()
+            beep_async([(784, 40), (1047, 50)])  # G5, C6
             logging.info("F9: recording")
 
         elif key == keyboard.Key.f10:
@@ -484,26 +506,18 @@ def on_press(key):
             hot_mic = not hot_mic
             logging.info(f"Hot mic {'ON' if hot_mic else 'OFF'}")
             # Double beep = on, single low = off
-            def _beep_hot():
-                if hot_mic:
-                    # Sticky keys on: ascending
-                    winsound.Beep(523, 80)
-                    winsound.Beep(587, 80)
-                    winsound.Beep(659, 80)
-                else:
-                    # Sticky keys off: descending
-                    winsound.Beep(659, 80)
-                    winsound.Beep(587, 80)
-                    winsound.Beep(523, 80)
-            threading.Thread(target=_beep_hot, daemon=True).start()
+            if hot_mic:
+                # Sticky keys on: ascending
+                beep_async([(523, 80), (587, 80), (659, 80)])
+            else:
+                # Sticky keys off: descending
+                beep_async([(659, 80), (587, 80), (523, 80)])
 
         elif key == keyboard.Key.f8:
             global vad_enabled
             vad_enabled = not vad_enabled
             logging.info(f"VAD {'enabled' if vad_enabled else 'disabled'}")
-            threading.Thread(target=winsound.Beep,
-                             args=(800 if vad_enabled else 400, 150),
-                             daemon=True).start()
+            beep_async([(800 if vad_enabled else 400, 150)])
 
     except Exception as e:
         logging.exception("Error in on_press")
@@ -519,10 +533,7 @@ def on_release(key):
 
             restore_audio()
             # Cute release chirp (descending boop)
-            def _beep_release():
-                winsound.Beep(1047, 40)  # C6
-                winsound.Beep(659, 60)   # E5
-            threading.Thread(target=_beep_release, daemon=True).start()
+            beep_async([(1047, 40), (659, 60)])  # C6, E5
             logging.info("F9: released, transcribing...")
 
             # Drain any remaining chunks from queue
@@ -571,10 +582,7 @@ def on_click(x, y, button, pressed):
                     logging.info("Middle mouse interrupted VAD recording")
                 duck_audio()
                 # Cute press chirp (ascending blip)
-                def _beep_press():
-                    winsound.Beep(784, 40)   # G5
-                    winsound.Beep(1047, 50)  # C6
-                threading.Thread(target=_beep_press, daemon=True).start()
+                beep_async([(784, 40), (1047, 50)])  # G5, C6
                 logging.info("Middle mouse: recording")
             else:
                 # Middle button released - transcribe
@@ -585,10 +593,7 @@ def on_click(x, y, button, pressed):
 
                 restore_audio()
                 # Cute release chirp (descending boop)
-                def _beep_release():
-                    winsound.Beep(1047, 40)  # C6
-                    winsound.Beep(659, 60)   # E5
-                threading.Thread(target=_beep_release, daemon=True).start()
+                beep_async([(1047, 40), (659, 60)])  # C6, E5
                 logging.info("Middle mouse: released, transcribing...")
 
                 # Drain any remaining chunks from queue
