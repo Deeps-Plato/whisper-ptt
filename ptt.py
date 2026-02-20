@@ -56,6 +56,9 @@ SILENCE_CHECK_SECS = 2.0    # silence before checking for "over"/"disregard"
 MAX_DICTATION_SECS = 300.0  # 5 min safety timeout
 VAD_CHUNK = 512              # silero requires exactly 512 samples @ 16kHz
 VAD_COOLDOWN_SECS = 5.0      # pause VAD after failed wake-phrase check
+LEXICAL_OVERRIDES = {
+    "cis": "sys",
+}
 
 # ── State machine ───────────────────────────────────────────────────
 class State(Enum):
@@ -118,11 +121,20 @@ def load_whisper():
         logging.info("Whisper ready")
     return whisper_model
 
+def apply_lexical_overrides(text):
+    """Force preferred token replacements on Whisper output."""
+    if not text:
+        return text
+    for source, target in LEXICAL_OVERRIDES.items():
+        text = re.sub(rf'\b{re.escape(source)}\b', target, text, flags=re.IGNORECASE)
+    return text
+
 def transcribe(audio):
     m = load_whisper()
     segments, _ = m.transcribe(audio, language="en", beam_size=5, vad_filter=True,
                                 initial_prompt=INITIAL_PROMPT)
-    return " ".join(seg.text.strip() for seg in segments)
+    text = " ".join(seg.text.strip() for seg in segments)
+    return apply_lexical_overrides(text)
 
 # ── Audio ducking ───────────────────────────────────────────────────
 def duck_audio():
