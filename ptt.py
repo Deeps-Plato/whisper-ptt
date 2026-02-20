@@ -58,6 +58,7 @@ VAD_CHUNK = 512              # silero requires exactly 512 samples @ 16kHz
 VAD_COOLDOWN_SECS = 5.0      # pause VAD after failed wake-phrase check
 LEXICAL_OVERRIDES = {
     "cis": "sys",
+    "ray": "Rei",
 }
 
 # ── State machine ───────────────────────────────────────────────────
