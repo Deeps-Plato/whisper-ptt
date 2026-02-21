@@ -26,6 +26,7 @@ Scheduled task `WhisperPTT` runs `pythonw.exe ptt.py` directly at logon (no bat 
 - `MODEL_SIZE` — whisper model (default: "base")
 - `INITIAL_PROMPT` — custom vocab
 - `DUCK_LEVEL` — audio ducking during transcription
+- `BEEP_BACKEND` — beep output backend (`"winsound"` default, or `"sounddevice"` fallback)
 
 ## Hotkeys
 - F9 / middle mouse: hold to record

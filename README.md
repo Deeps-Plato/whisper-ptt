@@ -33,9 +33,25 @@ First run downloads the Whisper model (~150MB for base). Logs go to `%TEMP%\whis
 
 Hold **F9** or **middle mouse button** to record, release to transcribe. Text is auto-pasted at cursor.
 
+### Audio Cue Beeps
+
+Beeps are built in and enabled by default.
+
+- **F9 / middle mouse press**: ascending chirp (G5→C6)
+- **F9 / middle mouse release**: descending chirp (C6→E5)
+- **F10 hot mic on**: ascending 3-tone (C5→D5→E5)
+- **F10 hot mic off**: descending 3-tone (E5→D5→C5)
+- **F8 VAD toggle**: high beep = on, low beep = off
+
+If a machine has no audible beeps with `winsound`, switch to `sounddevice`:
+
+```python
+BEEP_BACKEND = "sounddevice"
+```
+
 ### Radio Commands
 
-Commands work in both manual PTT (F9) and voice-activated modes:
+Commands work in voice-activated modes (hot mic and wake phrase). Manual PTT (F9/middle mouse) transcribes literally.
 
 | Command | Effect | Example |
 |---------|--------|---------|
@@ -99,6 +115,7 @@ DEVICE_NAME = "Volt 2"        # Audio input device — change to your mic
 MODEL_SIZE = "base"           # tiny, base, small, medium, large-v3
 INITIAL_PROMPT = "..."        # Custom vocab for better transcription accuracy
 DUCK_LEVEL = 0.1              # Audio ducking: 0.0 = mute, 1.0 = no change
+BEEP_BACKEND = "winsound"     # "winsound" (default) or "sounddevice"
 ```
 
 ### Hotkeys
@@ -115,7 +132,7 @@ To change, replace `keyboard.Key.f9` etc. with your preferred key from [pynput's
 
 ## Adding Words to Prompt
 
-To improve transcription of proper nouns, technical terms, or commonly misheard words, add them to `INITIAL_PROMPT` in `ptt.py` line 28:
+To improve transcription of proper nouns, technical terms, or commonly misheard words, add them to `INITIAL_PROMPT` in `ptt.py`:
 
 ```python
 INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL, NewWord, AnotherTerm."

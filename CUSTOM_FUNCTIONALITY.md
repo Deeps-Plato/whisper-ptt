@@ -16,6 +16,13 @@ Say **"send it"** to begin dictation. Keeps recording through silence gaps until
 ### VAD Toggle (F8)
 Enables/disables voice activity detection entirely. High beep = on, low beep = off. When off, only manual PTT works. **Default: off** (prevents GPU churn from ambient noise triggering repeated Whisper transcriptions).
 
+### Beep Backend
+Beeps are controlled by `BEEP_BACKEND` in `ptt.py`:
+- `"winsound"` (default) — system beep backend
+- `"sounddevice"` — generated tones via default audio output device
+
+If a first-time install has no audible cues, switch to `"sounddevice"` and restart.
+
 ## State Machine
 
 ```
@@ -33,6 +40,7 @@ F9/middle mouse interrupts any VAD state. Thread-safe via `state_lock`.
 ## Radio Commands
 
 Processed in `process_commands()`. Applied after transcription, before paste.
+Enabled for voice-activated paths. Manual PTT transcribes literally (`process_commands(..., radio=False)`).
 
 | Command | Behavior | Position constraint |
 |---------|----------|-------------------|
