@@ -1,6 +1,6 @@
 """Push-to-talk + voice-activated dictation with faster-whisper and silero-vad.
 
-F9 hold OR middle mouse button hold: manual PTT (radio commands)
+Right Ctrl hold OR middle mouse button hold: manual PTT (radio commands)
 F10: toggle hot mic (no wake phrase, just talk → paste on silence)
 F8: toggle VAD on/off
 Wake word "send it": hands-free dictation, keeps recording until "over"
@@ -44,11 +44,23 @@ from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
 
 # ── Config ──────────────────────────────────────────────────────────
 SAMPLE_RATE = 16000
-DEVICE_NAME = "Volt 2"
+DEVICE_NAME = "Yeti Classic"
 MODEL_SIZE = "base"
 INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL, Dart. openclaw, claude, claude-code, claude-flow, .openclaw, Ableton, Roblox, audiobooks, channel-icons, claudedocs, cleo, cleo_test, dippi, drones, everdo, fuzzy_launcher_android, icon-generator-android, logan, moltbot, obsidian_mcp, opencode, rei-flow, rei-local-bot, rei-output, research-staging, sweethome3d, voice_agent_gst, web_ez, whisper-ptt, @rei. Punctuation: dot ., slash /, hyphen -, brackets [], parentheses (), braces {}, hash #, at @, dollar $, percent %, caret ^, ampersand &, asterisk *, plus +, equals =, pipe |, backslash \\, tilde ~, backtick `, home slash ~/."
 DUCK_LEVEL = 0.1
 BEEP_BACKEND = "winsound"  # "sounddevice" or "winsound"
+TERMINAL_TITLE_HINTS = (
+    "codex",
+    "windows terminal",
+    "powershell",
+    "pwsh",
+    "ubuntu",
+    "wsl",
+    "bash",
+    "zsh",
+    "cmd",
+    "command prompt",
+)
 
 WAKE_PHRASE = "send it"
 VAD_THRESHOLD = 0.5
@@ -102,8 +114,11 @@ audio_q = queue.Queue(maxsize=200)
 # ── Globals ─────────────────────────────────────────────────────────
 whisper_model = None
 vad_model = None
-saved_volumes = {}
+saved_volumes = {}   # {(pid, session_idx): original_volume}
+duck_lock = threading.Lock()
+_is_ducked = False
 manual_chunks = []  # chunks collected during F9 hold
+key_sender = keyboard.Controller()
 
 # ── Device ──────────────────────────────────────────────────────────
 def find_device():
@@ -139,37 +154,60 @@ def transcribe(audio):
 
 # ── Audio ducking ───────────────────────────────────────────────────
 def duck_audio():
-    global saved_volumes
-    saved_volumes = {}
-    try:
-        CoInitialize()
-        sessions = AudioUtilities.GetAllSessions()
-        for s in sessions:
-            if s.Process:
-                vol = s._ctl.QueryInterface(ISimpleAudioVolume)
-                saved_volumes[s.Process.pid] = vol.GetMasterVolume()
-                vol.SetMasterVolume(saved_volumes[s.Process.pid] * DUCK_LEVEL, None)
-        logging.info(f"Ducked {len(saved_volumes)} sessions")
-    except Exception as e:
-        logging.exception("Duck failed")
-    finally:
-        CoUninitialize()
+    global saved_volumes, _is_ducked
+    with duck_lock:
+        if _is_ducked:
+            logging.info("duck_audio: already ducked, skipping")
+            return
+        new_saved = {}
+        try:
+            CoInitialize()
+            sessions = AudioUtilities.GetAllSessions()
+            pid_counters = {}
+            for s in sessions:
+                if s.Process:
+                    pid = s.Process.pid
+                    idx = pid_counters.get(pid, 0)
+                    pid_counters[pid] = idx + 1
+                    vol = s._ctl.QueryInterface(ISimpleAudioVolume)
+                    orig = vol.GetMasterVolume()
+                    new_saved[(pid, idx)] = orig
+                    vol.SetMasterVolume(orig * DUCK_LEVEL, None)
+            saved_volumes = new_saved
+            _is_ducked = True
+            logging.info(f"Ducked {len(saved_volumes)} sessions")
+        except Exception:
+            logging.exception("Duck failed")
+            saved_volumes = {}
+        finally:
+            CoUninitialize()
 
 def restore_audio():
-    global saved_volumes
-    try:
-        CoInitialize()
-        sessions = AudioUtilities.GetAllSessions()
-        for s in sessions:
-            if s.Process and s.Process.pid in saved_volumes:
-                vol = s._ctl.QueryInterface(ISimpleAudioVolume)
-                vol.SetMasterVolume(saved_volumes[s.Process.pid], None)
-        logging.info(f"Restored {len(saved_volumes)} sessions")
-        saved_volumes = {}
-    except Exception as e:
-        logging.exception("Restore failed")
-    finally:
-        CoUninitialize()
+    global saved_volumes, _is_ducked
+    with duck_lock:
+        if not _is_ducked:
+            logging.info("restore_audio: not ducked, skipping")
+            return
+        try:
+            CoInitialize()
+            sessions = AudioUtilities.GetAllSessions()
+            pid_counters = {}
+            for s in sessions:
+                if s.Process:
+                    pid = s.Process.pid
+                    idx = pid_counters.get(pid, 0)
+                    pid_counters[pid] = idx + 1
+                    key = (pid, idx)
+                    if key in saved_volumes:
+                        vol = s._ctl.QueryInterface(ISimpleAudioVolume)
+                        vol.SetMasterVolume(saved_volumes[key], None)
+            logging.info(f"Restored {len(saved_volumes)} sessions")
+        except Exception:
+            logging.exception("Restore failed")
+        finally:
+            saved_volumes = {}
+            _is_ducked = False
+            CoUninitialize()
 
 # ── Radio commands ──────────────────────────────────────────────────
 def strip_punctuation(word):
@@ -321,25 +359,54 @@ def process_commands(text, radio=True):
     return (final, press_enter)
 
 # ── Paste helper ────────────────────────────────────────────────────
+def _active_window_title():
+    try:
+        return (pyautogui.getActiveWindowTitle() or "").lower()
+    except Exception:
+        return ""
+
+def _is_terminal_like_window():
+    title = _active_window_title()
+    if not title:
+        # Unknown active window: prefer direct typing, it works in more terminals.
+        return True, title
+    return any(hint in title for hint in TERMINAL_TITLE_HINTS), title
+
 def paste_text(text, press_enter=False):
-    """Clipboard save/restore paste with optional Enter."""
+    """Type into terminal-like windows, otherwise clipboard-paste with restore."""
     if not text and not press_enter:
         return
+
     old_clip = None
+    used_direct_type = False
+    is_terminal, title = _is_terminal_like_window()
+
     if text:
-        try:
-            old_clip = pyperclip.paste()
-        except Exception:
-            old_clip = ""
-        pyperclip.copy(text)
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.05)
+        if is_terminal:
+            try:
+                key_sender.type(text)
+                used_direct_type = True
+                time.sleep(0.03)
+                logging.info(f"Typed text: {text!r} (title={title!r})")
+            except Exception:
+                logging.exception("Direct typing failed, falling back to clipboard paste")
+
+        if not used_direct_type:
+            try:
+                old_clip = pyperclip.paste()
+            except Exception:
+                old_clip = ""
+            pyperclip.copy(text)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.05)
+            logging.info(f"Pasted text: {text!r} (title={title!r})")
+
     if press_enter:
         pyautogui.press('enter')
         time.sleep(0.05)
+
     if old_clip is not None:
         pyperclip.copy(old_clip)
-    logging.info(f"Pasted: {text!r} (enter={press_enter})")
 
 # ── Audio callback ──────────────────────────────────────────────────
 def audio_callback(indata, frames, time_info, status):
@@ -359,7 +426,6 @@ def vad_monitor():
     speech_buf = np.array([], dtype=np.float32) # full audio for wake/dictation
     silence_time = 0.0
     speech_start = 0.0
-    ducked = False
     last_chunk_time = time.time()
     cooldown_until = 0.0  # timestamp: ignore VAD until this time
 
@@ -436,9 +502,7 @@ def vad_monitor():
                 # In normal mode, must contain wake phrase
                 if not hot_mic and not has_wake:
                     if elapsed >= MAX_DICTATION_SECS:
-                        if ducked:
-                            restore_audio()
-                            ducked = False
+                        restore_audio()
                         with state_lock:
                             state = State.IDLE
                         speech_buf = np.array([], dtype=np.float32)
@@ -472,13 +536,11 @@ def vad_monitor():
                 elif last_word == "over" or last_word == "disregard" or elapsed >= MAX_DICTATION_SECS:
                     # Done! Process the full text
                     logging.info(f"Complete utterance: '{text}'")
-                    if not ducked:
-                        duck_audio()
+                    duck_audio()
                     cleaned, press_enter = process_commands(text)
                     if cleaned or press_enter:
                         paste_text(cleaned, press_enter)
                     restore_audio()
-                    ducked = False
                     with state_lock:
                         state = State.IDLE
                     speech_buf = np.array([], dtype=np.float32)
@@ -490,15 +552,13 @@ def vad_monitor():
                         state = State.BUFFERING
                     silence_time = 0.0
                     logging.info("Wake phrase found, waiting for 'over'...")
-                    if not ducked:
-                        duck_audio()
-                        ducked = True
+                    duck_audio()
 
 # ── Keyboard handlers ──────────────────────────────────────────────
 def on_press(key):
     global state, manual_chunks
     try:
-        if key == keyboard.Key.f9:
+        if key == keyboard.Key.ctrl_r:
             with state_lock:
                 if state == State.MANUAL:
                     return  # already recording
@@ -508,11 +568,11 @@ def on_press(key):
             manual_chunks = []
             if prev in (State.BUFFERING, State.CHECKING):
                 restore_audio()
-                logging.info("F9 interrupted VAD recording")
+                logging.info("RCtrl interrupted VAD recording")
             duck_audio()
             # Cute press chirp (ascending blip)
             beep_async([(784, 40), (1047, 50)])  # G5, C6
-            logging.info("F9: recording")
+            logging.info("RCtrl: recording")
 
         elif key == keyboard.Key.f10:
             global hot_mic
@@ -538,7 +598,7 @@ def on_press(key):
 def on_release(key):
     global state, manual_chunks
     try:
-        if key == keyboard.Key.f9:
+        if key == keyboard.Key.ctrl_r:
             with state_lock:
                 if state != State.MANUAL:
                     return
@@ -547,7 +607,7 @@ def on_release(key):
             restore_audio()
             # Cute release chirp (descending boop)
             beep_async([(1047, 40), (659, 60)])  # C6, E5
-            logging.info("F9: released, transcribing...")
+            logging.info("RCtrl: released, transcribing...")
 
             # Drain any remaining chunks from queue
             while True:
