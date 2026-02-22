@@ -4,24 +4,24 @@
 
 isRecording := false
 
-F9:: {
+RCtrl:: {
     global isRecording
 
     if !isRecording {
         isRecording := true
 
         ; Start recording batch (runs ffmpeg)
-        Run('cmd /c "C:\Users\admin\Documents\Claude\whisper-ptt\record.bat"',, "Hide")
-        ToolTip("🎤")
+        Run('cmd /c "' A_ScriptDir '\record.bat"',, "Hide")
+        ToolTip("REC")
     }
 }
 
-F9 up:: {
+RCtrl up:: {
     global isRecording
 
     if isRecording {
         isRecording := false
-        ToolTip("⏳")
+        ToolTip("TRANSCRIBE")
 
         ; Kill ffmpeg to stop recording
         Run("taskkill /F /IM ffmpeg.exe",, "Hide")
@@ -32,13 +32,13 @@ F9 up:: {
 
         ; Check file size
         if !FileExist(wavFile) || FileGetSize(wavFile) < 1000 {
-            ToolTip("❌ No audio")
+            ToolTip("NO AUDIO")
             SetTimer(() => ToolTip(), -2000)
             return
         }
 
         ; Transcribe
-        RunWait('cmd /c "C:\Users\admin\Documents\Claude\whisper-ptt\transcribe.bat"',, "Hide")
+        RunWait('cmd /c "' A_ScriptDir '\transcribe.bat"',, "Hide")
 
         if FileExist(outFile) {
             text := Trim(FileRead(outFile))
@@ -46,12 +46,12 @@ F9 up:: {
 
             if text != "" && !InStr(text, "error") {
                 SendText(text)
-                ToolTip("✓")
+                ToolTip("OK")
             } else {
-                ToolTip("❌ Empty")
+                ToolTip("EMPTY")
             }
         } else {
-            ToolTip("❌ No txt")
+            ToolTip("NO TXT")
         }
 
         SetTimer(() => ToolTip(), -1500)
@@ -60,5 +60,5 @@ F9 up:: {
 
 Esc::ExitApp()
 
-ToolTip("PTT: F9")
+ToolTip("PTT: RCtrl")
 SetTimer(() => ToolTip(), -2000)
