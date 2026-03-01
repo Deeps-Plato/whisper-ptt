@@ -18,6 +18,7 @@ import time
 import threading
 import queue
 import re
+import json
 from enum import Enum
 import winsound
 
@@ -41,6 +42,8 @@ import pyperclip
 import pyautogui
 from comtypes import CoInitialize, CoUninitialize
 from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
+import pystray
+from PIL import Image, ImageDraw
 
 # ── Config ──────────────────────────────────────────────────────────
 SAMPLE_RATE = 16000
@@ -73,6 +76,66 @@ LEXICAL_OVERRIDES = {
     "ray": "Rei",
 }
 
+# ── Hotkey bindings (overwritten by load_settings at startup) ────────
+PTT_KEY      = keyboard.Key.ctrl_r   # keyboard PTT hold
+HOT_MIC_KEY  = keyboard.Key.f10     # toggle hot mic
+VAD_KEY      = keyboard.Key.f8      # toggle VAD
+
+def _key_to_str(key: keyboard.Key | keyboard.KeyCode) -> str:
+    """Serialize a pynput key to a JSON-safe string."""
+    if isinstance(key, keyboard.Key):
+        return key.name          # e.g. "ctrl_r", "f10"
+    return f"char:{key.char}"   # e.g. "char:a"
+
+def _str_to_key(s: str) -> keyboard.Key | keyboard.KeyCode:
+    """Deserialize a pynput key from a JSON string."""
+    if s.startswith("char:"):
+        return keyboard.KeyCode.from_char(s[5:])
+    return keyboard.Key[s]      # raises KeyError on unknown name — caller handles
+
+def _key_label(key: keyboard.Key | keyboard.KeyCode) -> str:
+    """Human-readable key name for display in the tray menu."""
+    if isinstance(key, keyboard.Key):
+        return key.name.replace("_", " ").title()   # "ctrl_r" → "Ctrl R"
+    return key.char
+
+# ── Settings persistence ─────────────────────────────────────────────
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt-settings.json")
+
+_SETTINGS_DEFAULTS = {
+    "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND,
+    "device_name": DEVICE_NAME, "vad_enabled": False, "hot_mic": False,
+    "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8",
+}
+
+def load_settings() -> dict:
+    defaults = dict(_SETTINGS_DEFAULTS)
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        defaults.update({k: saved[k] for k in defaults if k in saved})
+    except FileNotFoundError:
+        pass
+    except Exception:
+        logging.exception("load_settings failed, using defaults")
+    return defaults
+
+def save_settings() -> None:
+    data = {
+        "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND,
+        "device_name": DEVICE_NAME, "vad_enabled": vad_enabled, "hot_mic": hot_mic,
+        "ptt_key": _key_to_str(PTT_KEY),
+        "hot_mic_key": _key_to_str(HOT_MIC_KEY),
+        "vad_key": _key_to_str(VAD_KEY),
+    }
+    tmp = SETTINGS_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, SETTINGS_FILE)
+    except Exception:
+        logging.exception("save_settings failed")
+
 # ── State machine ───────────────────────────────────────────────────
 class State(Enum):
     IDLE = 0
@@ -83,6 +146,11 @@ class State(Enum):
 
 state = State.IDLE
 state_lock = threading.Lock()
+
+# Binding mode + restart event
+_restart_event = threading.Event()
+_binding_mode: str | None = None   # "ptt_key" | "hot_mic_key" | "vad_key" | None
+_binding_lock  = threading.Lock()  # guards _binding_mode reads/writes
 
 # Serialize beeps to avoid overlap/stutter and log failures
 beep_lock = threading.Lock()
@@ -107,9 +175,27 @@ def _play_beeps(tones):
 
 def beep_async(tones):
     threading.Thread(target=_play_beeps, args=(tones,), daemon=True).start()
+
 vad_enabled = False  # F8 to enable; default off to avoid GPU churn
 hot_mic = False  # hot mic: no wake phrase needed, just talk
 audio_q = queue.Queue(maxsize=200)
+
+# Apply saved settings — overwrites Config defaults with persisted values
+_s = load_settings()
+DUCK_LEVEL   = _s["duck_level"]
+BEEP_BACKEND = _s["beep_backend"]
+DEVICE_NAME  = _s["device_name"]
+vad_enabled  = _s["vad_enabled"]
+hot_mic      = _s["hot_mic"]
+for _attr, _setting, _default in [
+    ("PTT_KEY",     "ptt_key",     keyboard.Key.ctrl_r),
+    ("HOT_MIC_KEY", "hot_mic_key", keyboard.Key.f10),
+    ("VAD_KEY",     "vad_key",     keyboard.Key.f8),
+]:
+    try:
+        globals()[_attr] = _str_to_key(_s[_setting])
+    except (KeyError, AttributeError):
+        globals()[_attr] = _default
 
 # ── Globals ─────────────────────────────────────────────────────────
 whisper_model = None
@@ -474,6 +560,7 @@ def vad_monitor():
             if is_speech:
                 with state_lock:
                     state = State.BUFFERING
+                update_tray()
                 speech_buf = chunk.copy()
                 silence_time = 0.0
                 speech_start = now
@@ -492,6 +579,7 @@ def vad_monitor():
             if silence_time >= SILENCE_CHECK_SECS or elapsed >= MAX_DICTATION_SECS:
                 with state_lock:
                     state = State.CHECKING
+                update_tray()
 
                 text = transcribe(speech_buf)
                 normalized = re.sub(r'[.,!?;:\s]+', ' ', text.lower()).strip()
@@ -505,6 +593,7 @@ def vad_monitor():
                         restore_audio()
                         with state_lock:
                             state = State.IDLE
+                        update_tray()
                         speech_buf = np.array([], dtype=np.float32)
                         vad.reset_states()
                         cooldown_until = time.time() + VAD_COOLDOWN_SECS
@@ -512,6 +601,7 @@ def vad_monitor():
                     else:
                         with state_lock:
                             state = State.BUFFERING
+                        update_tray()
                         silence_time = 0.0
                         logging.info("No wake phrase yet, keep buffering")
                     continue
@@ -530,6 +620,7 @@ def vad_monitor():
                     restore_audio()
                     with state_lock:
                         state = State.IDLE
+                    update_tray()
                     speech_buf = np.array([], dtype=np.float32)
                     vad.reset_states()
                     logging.info("Hot mic done, back to idle")
@@ -543,6 +634,7 @@ def vad_monitor():
                     restore_audio()
                     with state_lock:
                         state = State.IDLE
+                    update_tray()
                     speech_buf = np.array([], dtype=np.float32)
                     vad.reset_states()
                     logging.info("Done, back to idle")
@@ -550,21 +642,184 @@ def vad_monitor():
                     # Wake phrase found but no "over" yet — keep recording
                     with state_lock:
                         state = State.BUFFERING
+                    update_tray()
                     silence_time = 0.0
                     logging.info("Wake phrase found, waiting for 'over'...")
                     duck_audio()
+
+# ── Tray icon ────────────────────────────────────────────────────────
+_STATE_COLORS = {
+    State.IDLE:       (90,  90,  90),
+    State.BUFFERING:  (50,  200,  50),
+    State.MANUAL:     (50,  200,  50),
+    State.CHECKING:   (220, 200,   0),
+    State.PROCESSING: (220, 200,   0),
+}
+
+def _make_tray_image(state_val: State, hot_mic_active: bool) -> Image.Image:
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([4, 4, 60, 60], fill=_STATE_COLORS.get(state_val, (90, 90, 90)))
+    if hot_mic_active:
+        draw.ellipse([42, 42, 58, 58], fill=(30, 130, 255))  # blue dot = hot mic
+    return img
+
+_tray_icon: "pystray.Icon | None" = None  # strong ref to prevent GC
+
+def update_tray() -> None:
+    if _tray_icon is None:
+        return
+    try:
+        with state_lock:
+            cur = state
+        _tray_icon.icon  = _make_tray_image(cur, hot_mic)
+        _tray_icon.title = f"PTT: {cur.name}"
+        _tray_icon.update_menu()
+    except Exception:
+        logging.exception("update_tray failed")
+
+# ── Tray menu callbacks ──────────────────────────────────────────────
+_DUCK_LEVELS = (0.0, 0.1, 0.25, 0.5)
+
+def _on_toggle_vad(icon, item):
+    global vad_enabled
+    vad_enabled = not vad_enabled
+    save_settings()
+    update_tray()
+
+def _on_toggle_hot_mic(icon, item):
+    global hot_mic
+    hot_mic = not hot_mic
+    save_settings()
+    update_tray()
+
+def _on_set_duck(level):
+    def cb(icon, item):
+        global DUCK_LEVEL
+        DUCK_LEVEL = level
+        save_settings()
+        update_tray()
+    return cb
+
+def _on_set_beep(backend):
+    def cb(icon, item):
+        global BEEP_BACKEND
+        BEEP_BACKEND = backend
+        save_settings()
+        update_tray()
+    return cb
+
+def _on_set_device(name):
+    def cb(icon, item):
+        global DEVICE_NAME
+        DEVICE_NAME = name
+        save_settings()
+        _restart_event.set()
+    return cb
+
+def _on_bind(target: str):
+    """Enter binding mode for the given target key."""
+    def cb(icon, item):
+        global _binding_mode
+        with _binding_lock:
+            _binding_mode = target
+        if _tray_icon:
+            _tray_icon.title = f"Press any key for {target.replace('_', ' ')}... (Esc to cancel)"
+        logging.info(f"Binding mode: {target}")
+    return cb
+
+def _on_restart(icon, item):
+    _restart_event.set()
+
+def _on_quit(icon, item):
+    icon.stop()
+    os._exit(0)   # sys.exit() is swallowed by pynput's blocked .join()
+
+def _get_input_devices():
+    return [(i, d["name"]) for i, d in enumerate(sd.query_devices())
+            if d["max_input_channels"] > 0]
+
+def build_menu():
+    duck_items = [pystray.MenuItem(f"{int(l*100)}%", _on_set_duck(l),
+                  checked=lambda item, l=l: DUCK_LEVEL == l, radio=True)
+                  for l in _DUCK_LEVELS]
+    beep_items = [pystray.MenuItem(b, _on_set_beep(b),
+                  checked=lambda item, b=b: BEEP_BACKEND == b, radio=True)
+                  for b in ("winsound", "sounddevice")]
+    mic_items  = [pystray.MenuItem(name, _on_set_device(name),
+                  checked=lambda item, n=name: DEVICE_NAME == n, radio=True)
+                  for _, name in _get_input_devices()]
+    hotkey_items = pystray.Menu(
+        pystray.MenuItem(lambda item: f"PTT key: {_key_label(PTT_KEY)}",
+                         _on_bind("ptt_key")),
+        pystray.MenuItem(lambda item: f"Hot mic key: {_key_label(HOT_MIC_KEY)}",
+                         _on_bind("hot_mic_key")),
+        pystray.MenuItem(lambda item: f"VAD key: {_key_label(VAD_KEY)}",
+                         _on_bind("vad_key")),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("(click a key to rebind, Esc to cancel)", None, enabled=False),
+    )
+    return pystray.Menu(
+        pystray.MenuItem(lambda item: f"PTT: {state.name}", None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("VAD enabled", _on_toggle_vad, checked=lambda item: vad_enabled),
+        pystray.MenuItem("Hot mic",     _on_toggle_hot_mic, checked=lambda item: hot_mic),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Duck level",   pystray.Menu(*duck_items)),
+        pystray.MenuItem("Beep backend", pystray.Menu(*beep_items)),
+        pystray.MenuItem("Microphone",   pystray.Menu(*mic_items)),
+        pystray.MenuItem("Hotkeys",      hotkey_items),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Restart PTT", _on_restart),
+        pystray.MenuItem("Quit",        _on_quit),
+    )
+
+def start_tray():
+    global _tray_icon
+    icon = pystray.Icon("whisper-ptt", _make_tray_image(State.IDLE, False),
+                        "PTT: IDLE", build_menu())
+    _tray_icon = icon
+    threading.Thread(target=icon.run, name="tray-thread", daemon=True).start()
+    logging.info("System tray started")
+
+# ── Binding capture ──────────────────────────────────────────────────
+def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
+    """Assign the captured key to the binding target and persist."""
+    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, _binding_mode
+    if key == keyboard.Key.esc:          # Escape cancels without changing anything
+        logging.info("Bind cancelled (Escape)")
+    else:
+        if mode == "ptt_key":
+            PTT_KEY = key
+        elif mode == "hot_mic_key":
+            HOT_MIC_KEY = key
+        elif mode == "vad_key":
+            VAD_KEY = key
+        logging.info(f"Bound {mode} → {_key_label(key)}")
+        save_settings()
+    with _binding_lock:
+        _binding_mode = None
+    update_tray()
 
 # ── Keyboard handlers ──────────────────────────────────────────────
 def on_press(key):
     global state, manual_chunks
     try:
-        if key == keyboard.Key.ctrl_r:
+        # Binding mode intercept — capture next key press as new binding
+        with _binding_lock:
+            mode = _binding_mode
+        if mode is not None:
+            _finish_bind(mode, key)
+            return    # don't let the key also trigger its normal action
+
+        if key == PTT_KEY:
             with state_lock:
                 if state == State.MANUAL:
                     return  # already recording
                 # Interrupt any VAD state
                 prev = state
                 state = State.MANUAL
+            update_tray()
             manual_chunks = []
             if prev in (State.BUFFERING, State.CHECKING):
                 restore_audio()
@@ -574,10 +829,11 @@ def on_press(key):
             beep_async([(784, 40), (1047, 50)])  # G5, C6
             logging.info("RCtrl: recording")
 
-        elif key == keyboard.Key.f10:
+        elif key == HOT_MIC_KEY:
             global hot_mic
             hot_mic = not hot_mic
             logging.info(f"Hot mic {'ON' if hot_mic else 'OFF'}")
+            save_settings()
             # Double beep = on, single low = off
             if hot_mic:
                 # Sticky keys on: ascending
@@ -585,12 +841,15 @@ def on_press(key):
             else:
                 # Sticky keys off: descending
                 beep_async([(659, 80), (587, 80), (523, 80)])
+            update_tray()
 
-        elif key == keyboard.Key.f8:
+        elif key == VAD_KEY:
             global vad_enabled
             vad_enabled = not vad_enabled
             logging.info(f"VAD {'enabled' if vad_enabled else 'disabled'}")
+            save_settings()
             beep_async([(800 if vad_enabled else 400, 150)])
+            update_tray()
 
     except Exception as e:
         logging.exception("Error in on_press")
@@ -598,11 +857,17 @@ def on_press(key):
 def on_release(key):
     global state, manual_chunks
     try:
-        if key == keyboard.Key.ctrl_r:
+        # Ignore release events during binding mode
+        with _binding_lock:
+            if _binding_mode is not None:
+                return
+
+        if key == PTT_KEY:
             with state_lock:
                 if state != State.MANUAL:
                     return
                 state = State.PROCESSING
+            update_tray()
 
             restore_audio()
             # Cute release chirp (descending boop)
@@ -632,6 +897,7 @@ def on_release(key):
             manual_chunks = []
             with state_lock:
                 state = State.IDLE
+            update_tray()
 
     except Exception as e:
         logging.exception("Error in on_release")
@@ -649,6 +915,7 @@ def on_click(x, y, button, pressed):
                     # Interrupt any VAD state
                     prev = state
                     state = State.MANUAL
+                update_tray()
                 manual_chunks = []
                 if prev in (State.BUFFERING, State.CHECKING):
                     restore_audio()
@@ -663,6 +930,7 @@ def on_click(x, y, button, pressed):
                     if state != State.MANUAL:
                         return
                     state = State.PROCESSING
+                update_tray()
 
                 restore_audio()
                 # Cute release chirp (descending boop)
@@ -692,6 +960,7 @@ def on_click(x, y, button, pressed):
                 manual_chunks = []
                 with state_lock:
                     state = State.IDLE
+                update_tray()
 
     except Exception as e:
         logging.exception("Error in on_click")
@@ -699,6 +968,8 @@ def on_click(x, y, button, pressed):
 # ── Main ────────────────────────────────────────────────────────────
 def run_listener():
     global vad_model
+
+    _restart_event.clear()
 
     device = find_device()
     if device is None:
@@ -726,17 +997,28 @@ def run_listener():
                         callback=audio_callback, blocksize=1600):
         with keyboard.Listener(on_press=on_press, on_release=on_release) as kb_listener, \
              mouse.Listener(on_click=on_click) as mouse_listener:
-            kb_listener.join()
-            mouse_listener.join()
+            while kb_listener.is_alive() and mouse_listener.is_alive():
+                if _restart_event.is_set():
+                    kb_listener.stop()
+                    mouse_listener.stop()
+                    break
+                _restart_event.wait(timeout=0.25)
     return True
 
 def main():
-    logging.info("PTT with VAD starting")
+    logging.info("PTT starting")
+    start_tray()                  # once; tray outlives run_listener() restarts
+
     while True:
         try:
             run_listener()
-        except Exception as e:
-            logging.exception("Listener crashed, restarting in 5s...")
+            if _restart_event.is_set():
+                logging.info("Restarting run_listener() (device change or explicit restart)")
+                time.sleep(0.5)   # let InputStream teardown fully close the device
+                continue
+            time.sleep(5)         # device-not-found or other clean exit
+        except Exception:
+            logging.exception("Listener crashed, restarting in 5s")
             time.sleep(5)
 
 if __name__ == "__main__":

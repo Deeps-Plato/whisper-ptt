@@ -15,7 +15,7 @@ cd whisper-ptt
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # 3. Install dependencies
-pip install faster-whisper silero-vad pynput pyperclip pyautogui sounddevice numpy pycaw comtypes
+pip install faster-whisper silero-vad pynput pyperclip pyautogui sounddevice numpy pycaw comtypes pystray pillow
 
 # 4. Find your microphone name
 python -c "import sounddevice; print(sounddevice.query_devices())"
@@ -101,6 +101,7 @@ Say punctuation names to insert symbols:
 | File | Purpose |
 |------|---------|
 | `ptt.py` | Main script - faster-whisper with pynput hotkey listener |
+| `ptt-settings.json` | Persisted settings (duck level, beep backend, mic, VAD, hotkeys) — auto-created |
 | `start-ptt.bat` | Legacy launcher (scheduled task now calls pythonw directly) |
 | `record.bat` | FFmpeg recording (used by AHK fallback) |
 | `transcribe.bat` | whisper-cli transcription (used by AHK fallback) |
@@ -120,15 +121,38 @@ BEEP_BACKEND = "winsound"     # "winsound" (default) or "sounddevice"
 
 ### Hotkeys
 
-Hotkeys are in the `on_press`/`on_release`/`on_click` functions near the bottom of `ptt.py`. Defaults:
+Default bindings:
 
 | Key | Action |
 |-----|--------|
-| F9 / middle mouse | Hold to record, release to transcribe (PTT) |
+| Right Ctrl / middle mouse | Hold to record, release to transcribe (PTT) |
 | F10 | Toggle hot mic (continuous voice-activated dictation) |
 | F8 | Toggle VAD on/off |
 
-To change, replace `keyboard.Key.f9` etc. with your preferred key from [pynput's Key enum](https://pynput.readthedocs.io/en/latest/keyboard.html#pynput.keyboard.Key).
+Rebind any keyboard hotkey interactively via the system tray: right-click the tray icon → **Hotkeys** → click the binding you want to change → press the new key (Esc to cancel). Bindings persist to `ptt-settings.json` and reload on next start. The middle mouse button PTT is not rebindable via the tray menu.
+
+## System Tray
+
+A tray icon appears in the Windows notification area showing PTT state at a glance:
+
+| Icon colour | State |
+|-------------|-------|
+| Grey circle | Idle |
+| Green circle | Recording (manual PTT or VAD buffering) |
+| Yellow circle | Transcribing |
+| Blue dot overlay | Hot mic active |
+
+Right-click the tray icon to access settings without editing `ptt.py`:
+
+- **VAD enabled** / **Hot mic** — toggle with a checkmark
+- **Duck level** — 0%, 10%, 25%, 50% (radio buttons)
+- **Beep backend** — winsound or sounddevice
+- **Microphone** — switch input device; audio stream restarts automatically
+- **Hotkeys** — rebind PTT, hot mic, and VAD keys interactively
+- **Restart PTT** — restart the audio stream (e.g. after device change)
+- **Quit** — exit the process
+
+All settings persist to `ptt-settings.json` immediately on change and reload on next launch.
 
 ## Adding Words to Prompt
 
