@@ -1,6 +1,6 @@
 """Push-to-talk + voice-activated dictation with faster-whisper and silero-vad.
 
-Right Ctrl hold OR middle mouse button hold: manual PTT (radio commands)
+Right Ctrl hold OR front thumb button (x2) hold: manual PTT (radio commands)
 F10: toggle hot mic (no wake phrase, just talk → paste on silence)
 F8: toggle VAD on/off
 Wake word "send it": hands-free dictation, keeps recording until "over"
@@ -903,10 +903,10 @@ def on_release(key):
         logging.exception("Error in on_release")
 
 def on_click(x, y, button, pressed):
-    """Mouse button handler - middle button acts as PTT."""
+    """Mouse button handler - front thumb button (x2) acts as PTT."""
     global state, manual_chunks
     try:
-        if button == mouse.Button.middle:
+        if button == mouse.Button.x2:
             if pressed:
                 # Middle button pressed - start recording
                 with state_lock:
@@ -919,11 +919,11 @@ def on_click(x, y, button, pressed):
                 manual_chunks = []
                 if prev in (State.BUFFERING, State.CHECKING):
                     restore_audio()
-                    logging.info("Middle mouse interrupted VAD recording")
+                    logging.info("Thumb button interrupted VAD recording")
                 duck_audio()
                 # Cute press chirp (ascending blip)
                 beep_async([(784, 40), (1047, 50)])  # G5, C6
-                logging.info("Middle mouse: recording")
+                logging.info("Thumb button: recording")
             else:
                 # Middle button released - transcribe
                 with state_lock:
@@ -935,7 +935,7 @@ def on_click(x, y, button, pressed):
                 restore_audio()
                 # Cute release chirp (descending boop)
                 beep_async([(1047, 40), (659, 60)])  # C6, E5
-                logging.info("Middle mouse: released, transcribing...")
+                logging.info("Thumb button: released, transcribing...")
 
                 # Drain any remaining chunks from queue
                 while True:
@@ -948,7 +948,7 @@ def on_click(x, y, button, pressed):
                     audio = np.concatenate(manual_chunks)
                     text = transcribe(audio)
                     if text.strip():
-                        logging.info(f"Middle mouse raw: {text}")
+                        logging.info(f"Thumb button raw: {text}")
                         cleaned, press_enter = process_commands(text, radio=False)
                         if cleaned or press_enter:
                             paste_text(cleaned, press_enter)

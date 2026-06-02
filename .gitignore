@@ -6,3 +6,6 @@ CLAUDE.local.md
 GEMINI.md
 .env
 .env.*
+# Machine-local runtime config & generated assets
+ptt-settings.json
+whisper-ptt.ico

@@ -103,6 +103,9 @@ Say punctuation names to insert symbols:
 | `ptt.py` | Main script - faster-whisper with pynput hotkey listener |
 | `ptt-settings.json` | Persisted settings (duck level, beep backend, mic, VAD, hotkeys) — auto-created |
 | `start-ptt.bat` | Legacy launcher (scheduled task now calls pythonw directly) |
+| `install-desktop-icon.bat` | Double-click to create a "Whisper PTT" desktop shortcut |
+| `install-desktop-icon.ps1` | PowerShell installer that builds the desktop shortcut |
+| `make_icon.py` | Generates `whisper-ptt.ico` (mic on the green brand circle) |
 | `record.bat` | FFmpeg recording (used by AHK fallback) |
 | `transcribe.bat` | whisper-cli transcription (used by AHK fallback) |
 | `whisper-ptt.ahk` | AutoHotkey fallback script |
@@ -125,11 +128,11 @@ Default bindings:
 
 | Key | Action |
 |-----|--------|
-| Right Ctrl / middle mouse | Hold to record, release to transcribe (PTT) |
+| Right Ctrl / front thumb button (x2) | Hold to record, release to transcribe (PTT) |
 | F10 | Toggle hot mic (continuous voice-activated dictation) |
 | F8 | Toggle VAD on/off |
 
-Rebind any keyboard hotkey interactively via the system tray: right-click the tray icon → **Hotkeys** → click the binding you want to change → press the new key (Esc to cancel). Bindings persist to `ptt-settings.json` and reload on next start. The middle mouse button PTT is not rebindable via the tray menu.
+Rebind any keyboard hotkey interactively via the system tray: right-click the tray icon → **Hotkeys** → click the binding you want to change → press the new key (Esc to cancel). Bindings persist to `ptt-settings.json` and reload on next start. The front thumb button (x2) PTT is not rebindable via the tray menu.
 
 ## System Tray
 
@@ -169,6 +172,18 @@ Restart the script after changes.
 ```bash
 python ptt.py          # with console (for debugging)
 pythonw ptt.py         # headless (no console window)
+```
+
+### Desktop Shortcut
+
+Double-click `install-desktop-icon.bat` to drop a **Whisper PTT** icon on your Desktop.
+It launches `pythonw ptt.py` headless (no console window) with the repo as the working
+directory, using a generated microphone icon. The installer regenerates the icon each run,
+so it works straight after a clone.
+
+```powershell
+# Or run the installer directly:
+powershell -ExecutionPolicy Bypass -File install-desktop-icon.ps1
 ```
 
 ## Service (Auto-Start)

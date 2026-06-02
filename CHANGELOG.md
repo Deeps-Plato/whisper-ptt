@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-02
+
+- **Desktop shortcut installer**: `install-desktop-icon.bat` (double-click) / `install-desktop-icon.ps1`
+  create a "Whisper PTT" shortcut on the Desktop that launches `pythonw ptt.py` headless with the
+  repo as the working directory
+- Added `make_icon.py` to generate `whisper-ptt.ico` — a white microphone on the green brand
+  circle, matching the tray icon's active-state colour
+- Manual PTT mouse binding changed from the middle mouse button to the front thumb button (x2)
+
 ## 2026-02-22
 
 - Fixed volume stuck at ducked level after speaking (three bugs in audio ducking):
