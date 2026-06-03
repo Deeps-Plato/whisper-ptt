@@ -132,7 +132,7 @@ Default bindings:
 | F10 | Toggle hot mic (continuous voice-activated dictation) |
 | F8 | Toggle VAD on/off |
 
-Rebind any keyboard hotkey interactively via the system tray: right-click the tray icon → **Hotkeys** → click the binding you want to change → press the new key (Esc to cancel). Bindings persist to `ptt-settings.json` and reload on next start. The front thumb button (x2) PTT is not rebindable via the tray menu.
+Rebind any hotkey — including the **PTT mouse button** — interactively via the system tray: right-click the tray icon → **Hotkeys** → click the binding you want to change → press the new key (or click the new mouse button; Esc to cancel). Side buttons (X1/X2) and the middle button work as the PTT mouse button; left/right click are reserved and ignored while binding. Bindings persist to `ptt-settings.json` and reload on next start.
 
 ## System Tray
 
@@ -151,7 +151,7 @@ Right-click the tray icon to access settings without editing `ptt.py`:
 - **Duck level** — 0%, 10%, 25%, 50% (radio buttons)
 - **Beep backend** — winsound or sounddevice
 - **Microphone** — switch input device; audio stream restarts automatically
-- **Hotkeys** — rebind PTT, hot mic, and VAD keys interactively
+- **Hotkeys** — rebind the PTT key, hot mic key, VAD key, and PTT mouse button interactively
 - **Restart PTT** — restart the audio stream (e.g. after device change)
 - **Quit** — exit the process
 

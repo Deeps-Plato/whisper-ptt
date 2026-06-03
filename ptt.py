@@ -1,6 +1,7 @@
 """Push-to-talk + voice-activated dictation with faster-whisper and silero-vad.
 
 Right Ctrl hold OR front thumb button (x2) hold: manual PTT (radio commands)
+  (both the PTT key and the PTT mouse button are configurable from the tray menu)
 F10: toggle hot mic (no wake phrase, just talk → paste on silence)
 F8: toggle VAD on/off
 Wake word "send it": hands-free dictation, keeps recording until "over"
@@ -77,9 +78,10 @@ LEXICAL_OVERRIDES = {
 }
 
 # ── Hotkey bindings (overwritten by load_settings at startup) ────────
-PTT_KEY      = keyboard.Key.ctrl_r   # keyboard PTT hold
-HOT_MIC_KEY  = keyboard.Key.f10     # toggle hot mic
-VAD_KEY      = keyboard.Key.f8      # toggle VAD
+PTT_KEY          = keyboard.Key.ctrl_r   # keyboard PTT hold
+HOT_MIC_KEY      = keyboard.Key.f10      # toggle hot mic
+VAD_KEY          = keyboard.Key.f8       # toggle VAD
+PTT_MOUSE_BUTTON = mouse.Button.x2       # mouse PTT hold (front thumb button)
 
 def _key_to_str(key: keyboard.Key | keyboard.KeyCode) -> str:
     """Serialize a pynput key to a JSON-safe string."""
@@ -99,6 +101,18 @@ def _key_label(key: keyboard.Key | keyboard.KeyCode) -> str:
         return key.name.replace("_", " ").title()   # "ctrl_r" → "Ctrl R"
     return key.char
 
+def _button_to_str(button: mouse.Button) -> str:
+    """Serialize a pynput mouse button to a JSON-safe string."""
+    return button.name              # e.g. "middle", "x1", "x2"
+
+def _str_to_button(s: str) -> mouse.Button:
+    """Deserialize a pynput mouse button from a JSON string."""
+    return mouse.Button[s]          # raises KeyError on unknown name — caller handles
+
+def _button_label(button: mouse.Button) -> str:
+    """Human-readable mouse-button name for display in the tray menu."""
+    return button.name.replace("_", " ").title()   # "middle" → "Middle", "x1" → "X1"
+
 # ── Settings persistence ─────────────────────────────────────────────
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt-settings.json")
 
@@ -106,6 +120,7 @@ _SETTINGS_DEFAULTS = {
     "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND,
     "device_name": DEVICE_NAME, "vad_enabled": False, "hot_mic": False,
     "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8",
+    "ptt_mouse_button": "x2",
 }
 
 def load_settings() -> dict:
@@ -127,6 +142,7 @@ def save_settings() -> None:
         "ptt_key": _key_to_str(PTT_KEY),
         "hot_mic_key": _key_to_str(HOT_MIC_KEY),
         "vad_key": _key_to_str(VAD_KEY),
+        "ptt_mouse_button": _button_to_str(PTT_MOUSE_BUTTON),
     }
     tmp = SETTINGS_FILE + ".tmp"
     try:
@@ -149,7 +165,7 @@ state_lock = threading.Lock()
 
 # Binding mode + restart event
 _restart_event = threading.Event()
-_binding_mode: str | None = None   # "ptt_key" | "hot_mic_key" | "vad_key" | None
+_binding_mode: str | None = None   # "ptt_key" | "hot_mic_key" | "vad_key" | "ptt_mouse_button" | None
 _binding_lock  = threading.Lock()  # guards _binding_mode reads/writes
 
 # Serialize beeps to avoid overlap/stutter and log failures
@@ -196,6 +212,10 @@ for _attr, _setting, _default in [
         globals()[_attr] = _str_to_key(_s[_setting])
     except (KeyError, AttributeError):
         globals()[_attr] = _default
+try:
+    PTT_MOUSE_BUTTON = _str_to_button(_s["ptt_mouse_button"])
+except (KeyError, AttributeError):
+    PTT_MOUSE_BUTTON = mouse.Button.x2
 
 # ── Globals ─────────────────────────────────────────────────────────
 whisper_model = None
@@ -718,13 +738,14 @@ def _on_set_device(name):
     return cb
 
 def _on_bind(target: str):
-    """Enter binding mode for the given target key."""
+    """Enter binding mode for the given target key (or mouse button)."""
     def cb(icon, item):
         global _binding_mode
         with _binding_lock:
             _binding_mode = target
+        what = "mouse button" if target.endswith("mouse_button") else "key"
         if _tray_icon:
-            _tray_icon.title = f"Press any key for {target.replace('_', ' ')}... (Esc to cancel)"
+            _tray_icon.title = f"Press any {what} for {target.replace('_', ' ')}... (Esc to cancel)"
         logging.info(f"Binding mode: {target}")
     return cb
 
@@ -757,7 +778,11 @@ def build_menu():
         pystray.MenuItem(lambda item: f"VAD key: {_key_label(VAD_KEY)}",
                          _on_bind("vad_key")),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("(click a key to rebind, Esc to cancel)", None, enabled=False),
+        pystray.MenuItem(lambda item: f"PTT mouse button: {_button_label(PTT_MOUSE_BUTTON)}",
+                         _on_bind("ptt_mouse_button")),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("(click an entry, then press the new key / mouse button — Esc cancels)",
+                         None, enabled=False),
     )
     return pystray.Menu(
         pystray.MenuItem(lambda item: f"PTT: {state.name}", None, enabled=False),
@@ -801,6 +826,24 @@ def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
         _binding_mode = None
     update_tray()
 
+def _finish_bind_mouse(button: mouse.Button) -> None:
+    """Assign the captured mouse button to the PTT mouse binding and persist."""
+    global PTT_MOUSE_BUTTON, _binding_mode
+    PTT_MOUSE_BUTTON = button
+    logging.info(f"Bound ptt_mouse_button → {_button_label(button)}")
+    save_settings()
+    with _binding_lock:
+        _binding_mode = None
+    update_tray()
+
+def _cancel_bind() -> None:
+    """Leave binding mode without changing anything."""
+    global _binding_mode
+    logging.info("Bind cancelled (Escape)")
+    with _binding_lock:
+        _binding_mode = None
+    update_tray()
+
 # ── Keyboard handlers ──────────────────────────────────────────────
 def on_press(key):
     global state, manual_chunks
@@ -809,6 +852,11 @@ def on_press(key):
         with _binding_lock:
             mode = _binding_mode
         if mode is not None:
+            if mode == "ptt_mouse_button":
+                # Waiting for a mouse button; only Esc (a key) cancels here.
+                if key == keyboard.Key.esc:
+                    _cancel_bind()
+                return    # swallow all other keys until a mouse button arrives
             _finish_bind(mode, key)
             return    # don't let the key also trigger its normal action
 
@@ -903,10 +951,19 @@ def on_release(key):
         logging.exception("Error in on_release")
 
 def on_click(x, y, button, pressed):
-    """Mouse button handler - front thumb button (x2) acts as PTT."""
+    """Mouse button handler - the configured PTT mouse button acts as PTT."""
     global state, manual_chunks
     try:
-        if button == mouse.Button.x2:
+        # Binding mode: capture a mouse button as the new PTT button.
+        with _binding_lock:
+            mode = _binding_mode
+        if mode is not None:
+            if (mode == "ptt_mouse_button" and pressed
+                    and button not in (mouse.Button.left, mouse.Button.right)):
+                _finish_bind_mouse(button)
+            return    # swallow all clicks while a bind is pending
+
+        if button == PTT_MOUSE_BUTTON:
             if pressed:
                 # Middle button pressed - start recording
                 with state_lock:

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-03
+
+- PTT mouse button is now rebindable from the tray menu (**Hotkeys → PTT mouse button**),
+  alongside the existing key rebinds. Click the entry, then press the new mouse button
+  (middle / X1 / X2 — left and right click are reserved and ignored while binding; Esc cancels).
+  Persisted as `ptt_mouse_button` in `ptt-settings.json`; the mouse listener picks it up live,
+  no restart needed. Default remains the front thumb button (x2).
+
 ## 2026-06-02
 
 - **Desktop shortcut installer**: `install-desktop-icon.bat` (double-click) / `install-desktop-icon.ps1`
