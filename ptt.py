@@ -51,8 +51,9 @@ SAMPLE_RATE = 16000
 DEVICE_NAME = "Yeti Classic"
 MODEL_SIZE = "base"
 INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL, Dart. openclaw, claude, claude-code, claude-flow, .openclaw, Ableton, Roblox, audiobooks, channel-icons, claudedocs, cleo, cleo_test, dippi, drones, everdo, fuzzy_launcher_android, icon-generator-android, logan, moltbot, obsidian_mcp, opencode, rei-flow, rei-local-bot, rei-output, research-staging, sweethome3d, voice_agent_gst, web_ez, whisper-ptt, @rei. Punctuation: dot ., slash /, hyphen -, brackets [], parentheses (), braces {}, hash #, at @, dollar $, percent %, caret ^, ampersand &, asterisk *, plus +, equals =, pipe |, backslash \\, tilde ~, backtick `, home slash ~/."
-DUCK_LEVEL = 0.1
-BEEP_BACKEND = "winsound"  # "sounddevice" or "winsound"
+DUCK_LEVEL = 0.05
+BEEP_BACKEND = "sounddevice"  # "sounddevice" (volume-adjustable, low latency) or "winsound" (loud, fixed)
+BEEP_VOLUME = 0.10  # 0.0–1.0 amplitude for sounddevice beeps; winsound ignores this
 TERMINAL_TITLE_HINTS = (
     "codex",
     "windows terminal",
@@ -117,7 +118,7 @@ def _button_label(button: mouse.Button) -> str:
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt-settings.json")
 
 _SETTINGS_DEFAULTS = {
-    "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND,
+    "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND, "beep_volume": BEEP_VOLUME,
     "device_name": DEVICE_NAME, "vad_enabled": False, "hot_mic": False,
     "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8",
     "ptt_mouse_button": "x2",
@@ -137,7 +138,7 @@ def load_settings() -> dict:
 
 def save_settings() -> None:
     data = {
-        "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND,
+        "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND, "beep_volume": BEEP_VOLUME,
         "device_name": DEVICE_NAME, "vad_enabled": vad_enabled, "hot_mic": hot_mic,
         "ptt_key": _key_to_str(PTT_KEY),
         "hot_mic_key": _key_to_str(HOT_MIC_KEY),
@@ -170,27 +171,61 @@ _binding_lock  = threading.Lock()  # guards _binding_mode reads/writes
 
 # Serialize beeps to avoid overlap/stutter and log failures
 beep_lock = threading.Lock()
+_BEEP_SR = 44100
+_BEEP_FADE_MS = 6            # attack/release ramp — removes the click that makes beeps feel harsh
+_beep_stream = None          # persistent output stream so beeps fire without per-call device-open lag
 
-def _sd_beep(tones, sample_rate=44100):
-    for freq, dur_ms in tones:
-        duration = max(dur_ms, 1) / 1000.0
-        t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
-        wave = (0.15 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-        sd.play(wave, samplerate=sample_rate, blocking=True)
+def _get_beep_stream():
+    global _beep_stream
+    if _beep_stream is None:
+        stream = sd.OutputStream(samplerate=_BEEP_SR, channels=1, dtype="float32")
+        stream.start()
+        _beep_stream = stream
+    return _beep_stream
+
+# Chirps as (freq_hz, duration_ms[, gain]). Equal durations + a small gain lift on the
+# lower tone keep both halves of a chirp at the same perceived loudness.
+PRESS_CHIRP   = [(784, 55, 1.18), (1047, 55)]   # G5 → C6 (ascending blip)
+RELEASE_CHIRP = [(1047, 55), (784, 55, 1.12)]   # C6 → G5 (descending boop)
+
+def _sd_beep(tones):
+    stream = _get_beep_stream()
+    fade = int(_BEEP_SR * _BEEP_FADE_MS / 1000.0)
+    for tone in tones:
+        freq, dur_ms = tone[0], tone[1]
+        gain = tone[2] if len(tone) > 2 else 1.0
+        amp = min(0.95, BEEP_VOLUME * gain)
+        n = int(_BEEP_SR * max(dur_ms, 1) / 1000.0)
+        t = np.arange(n, dtype=np.float32) / _BEEP_SR
+        wave = (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+        if n > 2 * fade:
+            wave[:fade]  *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+            wave[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        stream.write(wave)
 
 def _play_beeps(tones):
+    global _beep_stream
     try:
         with beep_lock:
             if BEEP_BACKEND == "winsound":
-                for freq, dur in tones:
-                    winsound.Beep(freq, dur)
-            else:
+                for tone in tones:
+                    winsound.Beep(tone[0], tone[1])
+            elif BEEP_VOLUME > 0:
                 _sd_beep(tones)
     except Exception:
         logging.exception("Beep failed")
+        _beep_stream = None   # drop the stream so it reopens next time (device may have changed)
 
-def beep_async(tones):
-    threading.Thread(target=_play_beeps, args=(tones,), daemon=True).start()
+def beep_async(tones, then=None):
+    """Play tones on a background thread; run optional `then` callback once they finish."""
+    def run():
+        _play_beeps(tones)
+        if then is not None:
+            try:
+                then()
+            except Exception:
+                logging.exception("beep 'then' callback failed")
+    threading.Thread(target=run, daemon=True).start()
 
 vad_enabled = False  # F8 to enable; default off to avoid GPU churn
 hot_mic = False  # hot mic: no wake phrase needed, just talk
@@ -200,6 +235,7 @@ audio_q = queue.Queue(maxsize=200)
 _s = load_settings()
 DUCK_LEVEL   = _s["duck_level"]
 BEEP_BACKEND = _s["beep_backend"]
+BEEP_VOLUME  = _s["beep_volume"]
 DEVICE_NAME  = _s["device_name"]
 vad_enabled  = _s["vad_enabled"]
 hot_mic      = _s["hot_mic"]
@@ -220,9 +256,12 @@ except (KeyError, AttributeError):
 # ── Globals ─────────────────────────────────────────────────────────
 whisper_model = None
 vad_model = None
-saved_volumes = {}   # {(pid, session_idx): original_volume}
+saved_volumes = {}   # {session_instance_id: original_volume}
 duck_lock = threading.Lock()
 _is_ducked = False
+RESTORE_DELAY = 0.12           # seconds after the release beep before un-ducking
+_VOL_TOLERANCE = 0.02          # treat a session within this of its target as restored
+_RESTORE_VERIFY_PASSES = 4     # re-check/re-apply restored volumes up to this many times
 manual_chunks = []  # chunks collected during F9 hold
 key_sender = keyboard.Controller()
 
@@ -259,6 +298,27 @@ def transcribe(audio):
     return apply_lexical_overrides(text)
 
 # ── Audio ducking ───────────────────────────────────────────────────
+def _session_key(s):
+    """Stable identifier for an audio session, robust to enumeration-order changes.
+
+    Multi-session apps (Discord runs several at once) get mis-matched when keyed by
+    position, leaving the actually-ducked session stuck low. The Windows session
+    *instance* identifier is unique per session and stable for its lifetime.
+    """
+    try:
+        sid = s.InstanceIdentifier
+        if sid:
+            return sid
+    except Exception:
+        pass
+    try:
+        sid = s._ctl.GetSessionInstanceIdentifier()
+        if sid:
+            return sid
+    except Exception:
+        pass
+    return f"pid:{s.Process.pid if s.Process else 0}"   # last-resort fallback
+
 def duck_audio():
     global saved_volumes, _is_ducked
     with duck_lock:
@@ -268,17 +328,19 @@ def duck_audio():
         new_saved = {}
         try:
             CoInitialize()
-            sessions = AudioUtilities.GetAllSessions()
-            pid_counters = {}
-            for s in sessions:
-                if s.Process:
-                    pid = s.Process.pid
-                    idx = pid_counters.get(pid, 0)
-                    pid_counters[pid] = idx + 1
-                    vol = s._ctl.QueryInterface(ISimpleAudioVolume)
-                    orig = vol.GetMasterVolume()
-                    new_saved[(pid, idx)] = orig
-                    vol.SetMasterVolume(orig * DUCK_LEVEL, None)
+            for s in AudioUtilities.GetAllSessions():
+                if not s.Process:
+                    continue
+                vol = s._ctl.QueryInterface(ISimpleAudioVolume)
+                orig = vol.GetMasterVolume()
+                # Don't poison the saved original with an already-ducked value: if a prior
+                # restore failed and left this session low, skip ducking it further.
+                if orig <= DUCK_LEVEL + _VOL_TOLERANCE:
+                    logging.warning(f"duck: {_session_key(s)} already at {orig:.3f} "
+                                    f"(<= duck level); leaving it alone")
+                    continue
+                new_saved[_session_key(s)] = orig
+                vol.SetMasterVolume(orig * DUCK_LEVEL, None)
             saved_volumes = new_saved
             _is_ducked = True
             logging.info(f"Ducked {len(saved_volumes)} sessions")
@@ -289,31 +351,58 @@ def duck_audio():
             CoUninitialize()
 
 def restore_audio():
+    """Un-duck and verify: re-apply each saved volume, then re-check a few times and
+    re-set any that didn't take. Some apps silently ignore the first SetMasterVolume,
+    which is what leaves them stuck low in the Windows volume mixer."""
     global saved_volumes, _is_ducked
     with duck_lock:
         if not _is_ducked:
             logging.info("restore_audio: not ducked, skipping")
             return
+        targets = dict(saved_volumes)   # session_key -> original volume
+        unrestored = set(targets)
         try:
             CoInitialize()
-            sessions = AudioUtilities.GetAllSessions()
-            pid_counters = {}
-            for s in sessions:
-                if s.Process:
-                    pid = s.Process.pid
-                    idx = pid_counters.get(pid, 0)
-                    pid_counters[pid] = idx + 1
-                    key = (pid, idx)
-                    if key in saved_volumes:
-                        vol = s._ctl.QueryInterface(ISimpleAudioVolume)
-                        vol.SetMasterVolume(saved_volumes[key], None)
-            logging.info(f"Restored {len(saved_volumes)} sessions")
+            for attempt in range(_RESTORE_VERIFY_PASSES):
+                if not unrestored:
+                    break
+                if attempt:
+                    time.sleep(0.04)
+                present = set()
+                for s in AudioUtilities.GetAllSessions():
+                    if not s.Process:
+                        continue
+                    key = _session_key(s)
+                    if key not in targets:
+                        continue
+                    present.add(key)
+                    vol = s._ctl.QueryInterface(ISimpleAudioVolume)
+                    orig = targets[key]
+                    if abs(vol.GetMasterVolume() - orig) <= _VOL_TOLERANCE:
+                        unrestored.discard(key)   # already at target
+                    else:
+                        vol.SetMasterVolume(orig, None)   # didn't take — re-apply, verify next pass
+                unrestored &= present   # sessions that have since closed can't (and needn't) be restored
+            if unrestored:
+                logging.warning(f"restore: {len(unrestored)} session(s) not verified back to "
+                                f"original volume: {sorted(unrestored)}")
+            logging.info(f"Restored {len(targets)} sessions "
+                         f"({len(targets) - len(unrestored)} verified)")
         except Exception:
             logging.exception("Restore failed")
         finally:
             saved_volumes = {}
             _is_ducked = False
             CoUninitialize()
+
+def _delayed_restore():
+    """Un-duck a moment after the release beep so the chirp isn't masked by other apps
+    jumping back to full volume. Skips the restore if recording resumed during the wait."""
+    time.sleep(RESTORE_DELAY)
+    with state_lock:
+        if state in (State.MANUAL, State.BUFFERING, State.CHECKING):
+            return   # pressed again during the delay — stay ducked; the new cycle will restore
+    restore_audio()
 
 # ── Radio commands ──────────────────────────────────────────────────
 def strip_punctuation(word):
@@ -699,7 +788,8 @@ def update_tray() -> None:
         logging.exception("update_tray failed")
 
 # ── Tray menu callbacks ──────────────────────────────────────────────
-_DUCK_LEVELS = (0.0, 0.1, 0.25, 0.5)
+_DUCK_LEVELS = (0.0, 0.05, 0.1, 0.25, 0.5)
+_BEEP_VOLUMES = (0.0, 0.05, 0.1, 0.15, 0.25)  # 0.0 = silent
 
 def _on_toggle_vad(icon, item):
     global vad_enabled
@@ -726,6 +816,15 @@ def _on_set_beep(backend):
         global BEEP_BACKEND
         BEEP_BACKEND = backend
         save_settings()
+        update_tray()
+    return cb
+
+def _on_set_beep_volume(vol):
+    def cb(icon, item):
+        global BEEP_VOLUME
+        BEEP_VOLUME = vol
+        save_settings()
+        beep_async(PRESS_CHIRP)  # preview the new level
         update_tray()
     return cb
 
@@ -767,6 +866,9 @@ def build_menu():
     beep_items = [pystray.MenuItem(b, _on_set_beep(b),
                   checked=lambda item, b=b: BEEP_BACKEND == b, radio=True)
                   for b in ("winsound", "sounddevice")]
+    beep_vol_items = [pystray.MenuItem(f"{int(v*100)}%" if v else "Off", _on_set_beep_volume(v),
+                      checked=lambda item, v=v: BEEP_VOLUME == v, radio=True)
+                      for v in _BEEP_VOLUMES]
     mic_items  = [pystray.MenuItem(name, _on_set_device(name),
                   checked=lambda item, n=name: DEVICE_NAME == n, radio=True)
                   for _, name in _get_input_devices()]
@@ -792,6 +894,7 @@ def build_menu():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Duck level",   pystray.Menu(*duck_items)),
         pystray.MenuItem("Beep backend", pystray.Menu(*beep_items)),
+        pystray.MenuItem("Beep volume",  pystray.Menu(*beep_vol_items)),
         pystray.MenuItem("Microphone",   pystray.Menu(*mic_items)),
         pystray.MenuItem("Hotkeys",      hotkey_items),
         pystray.Menu.SEPARATOR,
@@ -874,7 +977,7 @@ def on_press(key):
                 logging.info("RCtrl interrupted VAD recording")
             duck_audio()
             # Cute press chirp (ascending blip)
-            beep_async([(784, 40), (1047, 50)])  # G5, C6
+            beep_async(PRESS_CHIRP)
             logging.info("RCtrl: recording")
 
         elif key == HOT_MIC_KEY:
@@ -917,9 +1020,9 @@ def on_release(key):
                 state = State.PROCESSING
             update_tray()
 
-            restore_audio()
-            # Cute release chirp (descending boop)
-            beep_async([(1047, 40), (659, 60)])  # C6, E5
+            # Release chirp plays while still ducked; un-duck shortly after (see
+            # _delayed_restore) so the beep isn't masked by apps returning to full volume.
+            beep_async(RELEASE_CHIRP, then=_delayed_restore)
             logging.info("RCtrl: released, transcribing...")
 
             # Drain any remaining chunks from queue
@@ -979,7 +1082,7 @@ def on_click(x, y, button, pressed):
                     logging.info("Thumb button interrupted VAD recording")
                 duck_audio()
                 # Cute press chirp (ascending blip)
-                beep_async([(784, 40), (1047, 50)])  # G5, C6
+                beep_async(PRESS_CHIRP)
                 logging.info("Thumb button: recording")
             else:
                 # Middle button released - transcribe
@@ -989,9 +1092,9 @@ def on_click(x, y, button, pressed):
                     state = State.PROCESSING
                 update_tray()
 
-                restore_audio()
-                # Cute release chirp (descending boop)
-                beep_async([(1047, 40), (659, 60)])  # C6, E5
+                # Release chirp plays while still ducked; un-duck shortly after (see
+                # _delayed_restore) so the beep isn't masked by apps returning to full volume.
+                beep_async(RELEASE_CHIRP, then=_delayed_restore)
                 logging.info("Thumb button: released, transcribing...")
 
                 # Drain any remaining chunks from queue

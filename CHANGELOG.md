@@ -1,12 +1,40 @@
 # Changelog
 
-## 2026-06-03
+## 2026-06-03 (later)
 
+- Audio sessions are now matched by their Windows session-instance id instead of by list
+  position, so multi-session apps (e.g. Discord) are restored to their original volume
+  correctly and no longer stick at the duck level; `duck_audio()` also refuses to duck an
+  already-ducked session to avoid poisoning the saved original
+- Balanced the two tones within each chirp: equal 55 ms durations and a small gain lift on
+  the lower tone, so the first half of a chirp no longer sounds quieter than the second.
+  Both press and release chirps now share single `PRESS_CHIRP` / `RELEASE_CHIRP` constants
+- Un-ducking is now delayed ~0.12 s after the release beep (`RESTORE_DELAY`) so the chirp
+  isn't masked by other apps jumping back to full volume; skipped if recording resumes
+- `restore_audio()` now verifies: after re-applying saved volumes it re-checks each session
+  up to 4 times and re-applies any that didn't take, with a warning logged for any it can't restore
 - PTT mouse button is now rebindable from the tray menu (**Hotkeys → PTT mouse button**),
   alongside the existing key rebinds. Click the entry, then press the new mouse button
   (middle / X1 / X2 — left and right click are reserved and ignored while binding; Esc cancels).
   Persisted as `ptt_mouse_button` in `ptt-settings.json`; the mouse listener picks it up live,
   no restart needed. Default remains the front thumb button (x2).
+
+## 2026-06-03
+
+- Tuned beep/duck levels from real use: default `BEEP_VOLUME` 0.06 → 0.10, default `DUCK_LEVEL`
+  0.1 → 0.05 (other apps dim further while recording)
+- Brightened the release chirp (C6→G5, longer tail) so it carries over audio that has just been
+  un-ducked — the "let off" beep no longer sounds softer than the press beep
+- Tray submenus now offer 5% steps: **Duck level** adds 5%, **Beep volume** is Off/5/10/15/25%
+
+## 2026-06-02 (later)
+
+- **Softer, snappier beeps**: default beep backend switched to `sounddevice`, played through a
+  persistent low-latency output stream — removes the startup lag of `winsound.Beep`
+- Added `BEEP_VOLUME` (default `0.06`, ~60% quieter than before) with a 6 ms attack/release
+  fade envelope so the press/release chirps no longer click
+- New **Beep volume** tray submenu (Off / 3% / 6% / 12% / 25%), persisted to `ptt-settings.json`;
+  changing it plays a short preview
 
 ## 2026-06-02
 

@@ -118,9 +118,14 @@ Edit `ptt.py` to change settings:
 DEVICE_NAME = "Volt 2"        # Audio input device — change to your mic
 MODEL_SIZE = "base"           # tiny, base, small, medium, large-v3
 INITIAL_PROMPT = "..."        # Custom vocab for better transcription accuracy
-DUCK_LEVEL = 0.1              # Audio ducking: 0.0 = mute, 1.0 = no change
-BEEP_BACKEND = "winsound"     # "winsound" (default) or "sounddevice"
+DUCK_LEVEL = 0.05            # Audio ducking: 0.0 = mute, 1.0 = no change
+BEEP_BACKEND = "sounddevice"  # "sounddevice" (volume-adjustable, low latency) or "winsound" (loud, fixed)
+BEEP_VOLUME = 0.10           # 0.0–1.0 amplitude for sounddevice beeps (winsound ignores this)
 ```
+
+Beeps use the `sounddevice` backend by default: it plays through a persistent low-latency
+audio stream with a short fade envelope (soft, no click) and a volume you can set. The
+`winsound` backend is the Windows system beep — loud, fixed volume, and a touch laggy.
 
 ### Hotkeys
 
@@ -148,8 +153,9 @@ A tray icon appears in the Windows notification area showing PTT state at a glan
 Right-click the tray icon to access settings without editing `ptt.py`:
 
 - **VAD enabled** / **Hot mic** — toggle with a checkmark
-- **Duck level** — 0%, 10%, 25%, 50% (radio buttons)
+- **Duck level** — 0%, 5%, 10%, 25%, 50% (radio buttons)
 - **Beep backend** — winsound or sounddevice
+- **Beep volume** — Off, 5%, 10%, 15%, 25% (sounddevice only; plays a preview on change)
 - **Microphone** — switch input device; audio stream restarts automatically
 - **Hotkeys** — rebind the PTT key, hot mic key, VAD key, and PTT mouse button interactively
 - **Restart PTT** — restart the audio stream (e.g. after device change)
