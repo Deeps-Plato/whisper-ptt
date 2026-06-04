@@ -274,13 +274,37 @@ def find_device():
     return None
 
 # ── Models ──────────────────────────────────────────────────────────
+def _compute_candidates():
+    """(device, compute_type) pairs to try, best-first, for the current hardware.
+
+    float16 is only efficient on CUDA capability >= 7.0 (Turing/Ampere+). Pascal cards
+    (GTX 10xx, cap 6.x) raise "target device or backend do not support efficient float16",
+    so prefer int8 there. Falls back to CPU int8 if CUDA is unavailable or all GPU types fail.
+    """
+    if torch.cuda.is_available():
+        major = torch.cuda.get_device_capability(0)[0]
+        if major >= 7:
+            return [("cuda", "float16"), ("cuda", "int8_float16"),
+                    ("cuda", "int8"), ("cpu", "int8")]
+        return [("cuda", "int8"), ("cpu", "int8")]   # Pascal & older
+    return [("cpu", "int8")]
+
 def load_whisper():
     global whisper_model
-    if whisper_model is None:
-        logging.info("Loading whisper model...")
-        whisper_model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
-        logging.info("Whisper ready")
-    return whisper_model
+    if whisper_model is not None:
+        return whisper_model
+    last_err = None
+    for dev, ctype in _compute_candidates():
+        try:
+            logging.info(f"Loading whisper model ({dev}/{ctype})...")
+            whisper_model = WhisperModel(MODEL_SIZE, device=dev, compute_type=ctype)
+            logging.info(f"Whisper ready ({dev}/{ctype})")
+            return whisper_model
+        except Exception as e:
+            last_err = e
+            logging.warning(f"Whisper load failed for {dev}/{ctype}: {e}")
+    logging.error("All whisper compute types failed")
+    raise last_err
 
 def apply_lexical_overrides(text):
     """Force preferred token replacements on Whisper output."""
