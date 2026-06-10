@@ -158,6 +158,7 @@ _SETTINGS_DEFAULTS = {
     "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
     "capture_window_hint": CAPTURE_WINDOW_HINT,
     "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
+    "indicator": True,
 }
 
 def load_settings() -> dict:
@@ -189,6 +190,7 @@ def save_settings() -> None:
         "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
         "capture_window_hint": CAPTURE_WINDOW_HINT,
         "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
+        "indicator": INDICATOR,
     }
     tmp = SETTINGS_FILE + ".tmp"
     try:
@@ -366,6 +368,7 @@ vad_enabled  = _s["vad_enabled"]
 hot_mic      = _s["hot_mic"]
 OLLAMA_CLEANUP = bool(_s["ollama_cleanup"])
 OLLAMA_MODEL   = _s["ollama_model"]
+INDICATOR      = bool(_s["indicator"])
 CAPTURE_URI         = _s["capture_uri"]
 CAPTURE_TEXT_URI    = _s["capture_text_uri"]
 CAPTURE_FILE        = _s["capture_file"]
@@ -1165,11 +1168,89 @@ def repaste_last():
     logging.info(f"repaste: {len(last)} chars")
 
 # ── Audio callback ──────────────────────────────────────────────────
+_mic_rms = 0.0   # live input level, feeds the recording indicator
+
 def audio_callback(indata, frames, time_info, status):
+    global _mic_rms
+    try:
+        _mic_rms = float(np.sqrt(np.mean(np.square(indata))))
+    except Exception:
+        pass
     try:
         audio_q.put_nowait(indata.copy().flatten())
     except queue.Full:
         pass  # drop chunk silently
+
+# ── Recording indicator (speech-wave overlay) ───────────────────────
+# A small always-on-top bubble near the cursor while the mic is hot: bars
+# driven by live input level (blue = recording, orange pulse = transcribing).
+# The window is NEVER unmapped or activated — it parks off-screen when idle —
+# so it can never steal focus from the paste target. Any failure disables it
+# for the session; dictation is unaffected.
+INDICATOR = True
+
+def _indicator_loop():
+    try:
+        import tkinter as tk
+        W, H, N = 104, 34, 7          # bubble size, bar count
+        OFFSCREEN = f"{W}x{H}+-{W*3}+-{H*3}"
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        try:
+            root.attributes("-alpha", 0.92)
+        except Exception:
+            pass
+        root.geometry(OFFSCREEN)
+        canvas = tk.Canvas(root, width=W, height=H, bg="#1b1f27", highlightthickness=0)
+        canvas.pack()
+        hist = [0.0] * N
+        visible = False
+        while True:
+            with state_lock:
+                cur = state
+            if cur in (State.MANUAL, State.PROCESSING):
+                if not visible:
+                    try:
+                        x, y = pyautogui.position()
+                    except Exception:
+                        x, y = 300, 300
+                    root.geometry(f"{W}x{H}+{x + 18}+{y + 26}")
+                    visible = True
+                hist.pop(0)
+                if cur == State.MANUAL:
+                    hist.append(min(1.0, (max(_mic_rms, 0.0) * 8.0) ** 0.7))
+                    color = "#4aa3ff"                       # blue: recording
+                else:
+                    hist.append(0.55 + 0.4 * np.sin(time.time() * 6.0))
+                    color = "#ff9f40"                       # orange: transcribing
+                canvas.delete("all")
+                bw, gap = 8, 6
+                x0 = (W - (N * bw + (N - 1) * gap)) // 2
+                for i, v in enumerate(hist):
+                    h = max(3, int(v * (H - 10)))
+                    cx = x0 + i * (bw + gap)
+                    canvas.create_rectangle(cx, H // 2 - h // 2, cx + bw,
+                                            H // 2 + h // 2, fill=color, width=0)
+                root.update()
+                time.sleep(1 / 30)
+            else:
+                if visible:
+                    root.geometry(OFFSCREEN)   # park, never unmap (no focus events)
+                    visible = False
+                root.update()
+                time.sleep(0.12)
+    except Exception:
+        logging.exception("indicator failed — disabled for this session")
+
+_indicator_started = False
+
+def start_indicator():
+    global _indicator_started
+    if _indicator_started or not INDICATOR:
+        return
+    _indicator_started = True
+    threading.Thread(target=_indicator_loop, daemon=True, name="indicator").start()
 
 # ── VAD monitor thread ──────────────────────────────────────────────
 def vad_monitor():
@@ -1419,6 +1500,14 @@ def _on_toggle_ollama(icon, item):
     save_settings()
     update_tray()
 
+def _on_toggle_indicator(icon, item):
+    global INDICATOR
+    INDICATOR = not INDICATOR
+    if INDICATOR:
+        start_indicator()   # no-op if the thread already runs
+    save_settings()
+    update_tray()
+
 def _on_teach(icon, item):
     threading.Thread(target=teach_from_selection, daemon=True).start()
 
@@ -1505,6 +1594,8 @@ def build_menu():
         pystray.MenuItem("Hot mic",     _on_toggle_hot_mic, checked=lambda item: hot_mic),
         pystray.MenuItem(lambda item: f"Ollama cleanup ({OLLAMA_MODEL})",
                          _on_toggle_ollama, checked=lambda item: OLLAMA_CLEANUP),
+        pystray.MenuItem("Recording indicator", _on_toggle_indicator,
+                         checked=lambda item: INDICATOR),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Dictionary",   dict_items),
         pystray.MenuItem("Duck level",   pystray.Menu(*duck_items)),
@@ -1811,6 +1902,7 @@ def run_listener():
 def main():
     logging.info("PTT starting")
     start_tray()                  # once; tray outlives run_listener() restarts
+    start_indicator()             # once; parks off-screen until recording
 
     while True:
         try:
