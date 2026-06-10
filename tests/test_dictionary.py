@@ -19,7 +19,7 @@ PTT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 
 FUNCS = ("build_initial_prompt", "apply_corrections",
          "_norm_word", "_clean_token", "_extract_pairs", "_app_profile_for",
-         "_profile_field", "_profile_style")
+         "_profile_field", "_profile_style", "strip_punctuation", "process_commands")
 
 def load_funcs():
     with open(PTT, "r", encoding="utf-8") as f:
@@ -29,7 +29,8 @@ def load_funcs():
     missing = set(FUNCS) - {n.name for n in wanted}
     assert not missing, f"functions not found in ptt.py: {missing}"
     ns = {"re": re, "difflib": difflib, "json": json, "logging": logging,
-          "PROMPT_TOKEN_BUDGET": 200, "_dictionary": {"corrections": {}}}
+          "PROMPT_TOKEN_BUDGET": 200, "_dictionary": {"corrections": {}},
+          "WAKE_PHRASE": "send it"}
     exec(compile(ast.Module(body=wanted, type_ignores=[]), PTT, "exec"), ns)
     return ns
 
@@ -149,6 +150,24 @@ check("profiles: vocab from string profile is None", _profile_field("email style
 check("profiles: corrections from object", _profile_field(OBJ, "corrections"), {"usc": "UFC"})
 check("profiles: object profile returned whole by matcher",
       _app_profile_for("#general - Discord", {"discord": OBJ}), OBJ)
+
+# ── process_commands radio modes (manual "over" opt-in) ──────────────
+process_commands = ns["process_commands"]
+check("over-mode: trailing over presses Enter",
+      process_commands("send the quote over", radio="over"),
+      ("Send the quote. ", True))
+check("over-mode: mid-sentence over is just a word",
+      process_commands("over the weekend we ship", radio="over")[1], False)
+check("over-mode: correction NOT honored (stays literal)",
+      "correction" in process_commands("ship it correction now", radio="over")[0].lower(),
+      True)
+check("over-mode: disregard NOT honored (stays literal)",
+      process_commands("never mind disregard", radio="over")[0] is not None, True)
+check("radio off: trailing over stays literal",
+      process_commands("send the quote over", radio=False)[1], False)
+check("full radio: correction still works",
+      process_commands("hello world correction there", radio=True),
+      ("Hello there. ", False))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

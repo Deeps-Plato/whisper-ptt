@@ -71,6 +71,7 @@ TERMINAL_TITLE_HINTS = (
 )
 
 WAKE_PHRASE = "send it"
+MANUAL_OVER = False   # opt-in: ending a manual-PTT dictation with "over" presses Enter
 VAD_THRESHOLD = 0.5
 SILENCE_CHECK_SECS = 2.0    # silence before checking for "over"/"disregard"
 MAX_DICTATION_SECS = 300.0  # 5 min safety timeout
@@ -158,7 +159,7 @@ _SETTINGS_DEFAULTS = {
     "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
     "capture_window_hint": CAPTURE_WINDOW_HINT,
     "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
-    "indicator": True,
+    "indicator": True, "manual_over": MANUAL_OVER,
 }
 
 def load_settings() -> dict:
@@ -190,7 +191,7 @@ def save_settings() -> None:
         "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
         "capture_window_hint": CAPTURE_WINDOW_HINT,
         "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
-        "indicator": INDICATOR,
+        "indicator": INDICATOR, "manual_over": MANUAL_OVER,
     }
     tmp = SETTINGS_FILE + ".tmp"
     try:
@@ -397,6 +398,7 @@ hot_mic      = _s["hot_mic"]
 OLLAMA_CLEANUP = bool(_s["ollama_cleanup"])
 OLLAMA_MODEL   = _s["ollama_model"]
 INDICATOR      = bool(_s["indicator"])
+MANUAL_OVER    = bool(_s["manual_over"])
 CAPTURE_URI         = _s["capture_uri"]
 CAPTURE_TEXT_URI    = _s["capture_text_uri"]
 CAPTURE_FILE        = _s["capture_file"]
@@ -739,7 +741,10 @@ def process_commands(text, radio=True):
     """Process radio commands. Returns (cleaned_text, press_enter).
 
     radio=True enables break/over/correction/disregard (voice-activation only).
-    radio=False skips them (manual PTT — just transcribe literally).
+    radio="over" enables ONLY the trailing-"over"-presses-Enter command —
+    the manual-PTT opt-in (MANUAL_OVER setting). Other commands stay off so
+    ordinary speech can't delete words or cancel an utterance.
+    radio=False skips all commands (manual PTT — just transcribe literally).
     Returns (None, False) for disregard.
     """
     if not text or not text.strip():
@@ -758,7 +763,7 @@ def process_commands(text, radio=True):
         return (None, False)
 
     # Check for disregard anywhere (voice-activation only)
-    if radio:
+    if radio is True:
         for w in words:
             if strip_punctuation(w).lower() == "disregard":
                 logging.info("Disregard command")
@@ -832,7 +837,7 @@ def process_commands(text, radio=True):
             if result:
                 result[-1] = result[-1].rstrip('.,;:?!') + w
             continue
-        elif radio and cleaned == "break":
+        elif radio is True and cleaned == "break":
             result.append("\n")
         elif radio and cleaned == "over" and i == len(words) - 1:
             press_enter = True
@@ -841,7 +846,7 @@ def process_commands(text, radio=True):
             keep = ''.join(c for c in trailing if c in '?!')
             if keep and result:
                 result[-1] = result[-1].rstrip('.,;:?!') + keep
-        elif radio and cleaned == "correction":
+        elif radio is True and cleaned == "correction":
             if result:
                 popped = result.pop()
                 logging.info(f"Correction: removed '{popped}'")
@@ -1543,6 +1548,12 @@ def _on_toggle_ollama(icon, item):
     save_settings()
     update_tray()
 
+def _on_toggle_manual_over(icon, item):
+    global MANUAL_OVER
+    MANUAL_OVER = not MANUAL_OVER
+    save_settings()
+    update_tray()
+
 def _on_toggle_indicator(icon, item):
     global INDICATOR
     INDICATOR = not INDICATOR
@@ -1651,6 +1662,8 @@ def build_menu():
                          _on_toggle_ollama, checked=lambda item: OLLAMA_CLEANUP),
         pystray.MenuItem("Recording indicator", _on_toggle_indicator,
                          checked=lambda item: INDICATOR),
+        pystray.MenuItem("Trailing 'over' presses Enter (manual PTT)",
+                         _on_toggle_manual_over, checked=lambda item: MANUAL_OVER),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Dictionary",   dict_items),
         pystray.MenuItem("Duck level",   pystray.Menu(*duck_items)),
@@ -1833,7 +1846,8 @@ def on_release(key):
                 text = transcribe(audio)
                 if text.strip():
                     logging.info(f"F9 raw: {text}")
-                    cleaned, press_enter = process_commands(text, radio=False)
+                    cleaned, press_enter = process_commands(
+                        text, radio="over" if MANUAL_OVER else False)
                     if cleaned:
                         cleaned = llm_cleanup(cleaned)
                     deliver_text(cleaned, press_enter, raw=text)
@@ -1911,7 +1925,8 @@ def on_click(x, y, button, pressed):
                     text = transcribe(audio)
                     if text.strip():
                         logging.info(f"Thumb button raw: {text}")
-                        cleaned, press_enter = process_commands(text, radio=False)
+                        cleaned, press_enter = process_commands(
+                            text, radio="over" if MANUAL_OVER else False)
                         if cleaned:
                             cleaned = llm_cleanup(cleaned)
                         deliver_text(cleaned, press_enter, raw=text)
