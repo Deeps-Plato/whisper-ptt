@@ -11,4 +11,5 @@ GEMINI.md
 ptt-settings.json
 dictionary.json
 cleanup-log.jsonl
+dictation-history.jsonl
 whisper-ptt.ico

@@ -92,7 +92,8 @@ PTT_KEY          = keyboard.Key.ctrl_r   # keyboard PTT hold
 HOT_MIC_KEY      = keyboard.Key.f10      # toggle hot mic
 VAD_KEY          = keyboard.Key.f8       # toggle VAD
 TEACH_KEY        = keyboard.Key.f7       # learn corrections from selected fixed text
-CAPTURE_KEY      = keyboard.Key.f15      # note-capture PTT: open CAPTURE_URI, record, paste into it
+CAPTURE_KEY      = keyboard.Key.f15      # note-capture PTT: silent append to your note
+REPASTE_KEY      = keyboard.Key.f16      # re-paste the last transcript at current focus
 PTT_MOUSE_BUTTON = mouse.Button.x2       # mouse PTT hold (front thumb button)
 
 # Note-capture: hold CAPTURE_KEY, talk, release — the transcript is delivered
@@ -149,7 +150,7 @@ _SETTINGS_DEFAULTS = {
     "device_name": DEVICE_NAME, "model_size": MODEL_SIZE,
     "vad_enabled": False, "hot_mic": False,
     "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8", "teach_key": "f7",
-    "capture_key": "f15", "ptt_mouse_button": "x2",
+    "capture_key": "f15", "repaste_key": "f16", "ptt_mouse_button": "x2",
     "capture_uri": CAPTURE_URI, "capture_text_uri": CAPTURE_TEXT_URI,
     "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
     "capture_window_hint": CAPTURE_WINDOW_HINT,
@@ -178,6 +179,7 @@ def save_settings() -> None:
         "vad_key": _key_to_str(VAD_KEY),
         "teach_key": _key_to_str(TEACH_KEY),
         "capture_key": _key_to_str(CAPTURE_KEY),
+        "repaste_key": _key_to_str(REPASTE_KEY),
         "ptt_mouse_button": _button_to_str(PTT_MOUSE_BUTTON),
         "capture_uri": CAPTURE_URI, "capture_text_uri": CAPTURE_TEXT_URI,
         "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
@@ -255,6 +257,7 @@ def load_dictionary():
     d.setdefault("vocab", [])
     d.setdefault("corrections", {})
     d.setdefault("app_profiles", {})
+    d.setdefault("_teach_history", [])   # last N teach events, for undo
     _dictionary = d
     EFFECTIVE_PROMPT = build_initial_prompt(d)
     logging.info(f"dictionary: {len(d['vocab'])} vocab terms, "
@@ -370,6 +373,7 @@ for _attr, _setting, _default in [
     ("VAD_KEY",     "vad_key",     keyboard.Key.f8),
     ("TEACH_KEY",   "teach_key",   keyboard.Key.f7),
     ("CAPTURE_KEY", "capture_key", keyboard.Key.f15),
+    ("REPASTE_KEY", "repaste_key", keyboard.Key.f16),
 ]:
     try:
         globals()[_attr] = _str_to_key(_s[_setting])
@@ -960,6 +964,7 @@ def teach_from_selection():
         logging.info("teach: no learnable word-level differences found")
         return
 
+    vocab_added = []
     for wrong, right in pairs:
         _dictionary["corrections"][wrong] = right
         # New proper nouns also go in vocab so Whisper can get them right
@@ -967,6 +972,13 @@ def teach_from_selection():
         if (" " not in right and right not in _dictionary["vocab"]
                 and any(ch.isupper() or ch.isdigit() for ch in right)):
             _dictionary["vocab"].append(right)
+            vocab_added.append(right)
+    _dictionary["_teach_history"].append({
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "pairs": [[w, r] for w, r in pairs],
+        "vocab_added": vocab_added,
+    })
+    del _dictionary["_teach_history"][:-20]   # keep last 20 events
     save_dictionary()
     EFFECTIVE_PROMPT = build_initial_prompt(_dictionary)
     learned = ", ".join(f"{w}→{r}" for w, r in pairs)
@@ -974,6 +986,31 @@ def teach_from_selection():
     beep_async([(523, 70), (659, 70), (784, 90)])   # success arpeggio
     if _tray_icon:
         _tray_icon.title = f"Learned: {learned[:96]}"
+
+def undo_last_teach():
+    """Revert the most recent teach event — its corrections and any vocab it
+    added. One bad learn ("bols"→"both") silently poisons every future
+    dictation; this makes the teach key fearless."""
+    global EFFECTIVE_PROMPT
+    hist = _dictionary.get("_teach_history") or []
+    if not hist:
+        beep_async([(400, 120)])
+        logging.info("undo teach: history is empty")
+        return
+    event = hist.pop()
+    for wrong, right in event.get("pairs", []):
+        if _dictionary["corrections"].get(wrong) == right:
+            del _dictionary["corrections"][wrong]
+    for word in event.get("vocab_added", []):
+        if word in _dictionary["vocab"]:
+            _dictionary["vocab"].remove(word)
+    save_dictionary()
+    EFFECTIVE_PROMPT = build_initial_prompt(_dictionary)
+    undone = ", ".join(f"{w}→{r}" for w, r in event.get("pairs", []))
+    logging.info(f"undo teach: reverted {undone}")
+    beep_async([(784, 70), (659, 70), (523, 90)])   # descending arpeggio
+    if _tray_icon:
+        _tray_icon.title = f"Undid teach: {undone[:90]}"
 
 # ── Note-capture PTT ─────────────────────────────────────────────────
 def _open_capture_target():
@@ -1033,13 +1070,30 @@ def _append_capture_text(text):
     os.startfile(uri)
     logging.info(f"capture: appended {len(text)} chars via URI")
 
-def deliver_text(cleaned, press_enter):
-    """Route a manual-session transcript: capture sessions append via URI,
-    plain PTT pastes at the cursor."""
-    global _capture_session
+_HISTORY_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dictation-history.jsonl")
+
+def _log_dictation(raw, final, mode, window):
+    """Unified history of every manual dictation — including raw-path ones the
+    cleanup log never sees. Powers the re-paste key's paper trail and audits."""
+    try:
+        with open(_HISTORY_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "mode": mode, "window": window,
+                "raw": raw, "final": final,
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        logging.exception("dictation history log failed")
+
+def deliver_text(cleaned, press_enter, raw=""):
+    """Route a manual-session transcript: capture sessions append to the note,
+    plain PTT pastes at the cursor. Logs to history either way."""
+    global _capture_session, _last_pasted_text
+    mode = "capture" if _capture_session else "ptt"
     try:
         if _capture_session and (CAPTURE_FILE or CAPTURE_TEXT_URI) and cleaned:
             _append_capture_text(cleaned)
+            _last_pasted_text = cleaned   # teach + re-paste track captures too
         elif cleaned or press_enter:
             paste_text(cleaned, press_enter)
     except Exception:
@@ -1048,6 +1102,19 @@ def deliver_text(cleaned, press_enter):
             paste_text(cleaned, press_enter)
     finally:
         _capture_session = False
+        if cleaned:
+            _log_dictation(raw, cleaned, mode, _active_window_title())
+
+def repaste_last():
+    """Re-paste the most recent transcript at the current focus — insurance for
+    when the target app ate the paste (dialog stole focus, wrong window)."""
+    last = (_last_pasted_text or "").strip()
+    if not last:
+        beep_async([(400, 120)])
+        logging.info("repaste: nothing to re-paste")
+        return
+    paste_text(last)
+    logging.info(f"repaste: {len(last)} chars")
 
 # ── Audio callback ──────────────────────────────────────────────────
 def audio_callback(indata, frames, time_info, status):
@@ -1307,6 +1374,9 @@ def _on_toggle_ollama(icon, item):
 def _on_teach(icon, item):
     threading.Thread(target=teach_from_selection, daemon=True).start()
 
+def _on_undo_teach(icon, item):
+    threading.Thread(target=undo_last_teach, daemon=True).start()
+
 def _on_reload_dict(icon, item):
     load_dictionary()
     beep_async([(659, 70), (784, 70)])
@@ -1353,6 +1423,8 @@ def build_menu():
                          _on_bind("teach_key")),
         pystray.MenuItem(lambda item: f"Capture key: {_key_label(CAPTURE_KEY)}",
                          _on_bind("capture_key")),
+        pystray.MenuItem(lambda item: f"Re-paste key: {_key_label(REPASTE_KEY)}",
+                         _on_bind("repaste_key")),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(lambda item: f"PTT mouse button: {_button_label(PTT_MOUSE_BUTTON)}",
                          _on_bind("ptt_mouse_button")),
@@ -1363,6 +1435,12 @@ def build_menu():
     dict_items = pystray.Menu(
         pystray.MenuItem(lambda item: f"Teach from selection ({_key_label(TEACH_KEY)})",
                          _on_teach),
+        pystray.MenuItem(
+            lambda item: ("Undo last teach"
+                          + ((" (" + ", ".join(f"{w}→{r}" for w, r in
+                              (_dictionary.get("_teach_history") or [{}])[-1].get("pairs", [])[:2]) + ")")
+                             if (_dictionary.get("_teach_history") or []) else " (none)")),
+            _on_undo_teach),
         pystray.MenuItem("Reload dictionary.json", _on_reload_dict),
         pystray.MenuItem("Open dictionary.json",   _on_open_dict),
         pystray.Menu.SEPARATOR,
@@ -1400,7 +1478,7 @@ def start_tray():
 # ── Binding capture ──────────────────────────────────────────────────
 def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
     """Assign the captured key to the binding target and persist."""
-    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, TEACH_KEY, CAPTURE_KEY, _binding_mode
+    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, TEACH_KEY, CAPTURE_KEY, REPASTE_KEY, _binding_mode
     if key == keyboard.Key.esc:          # Escape cancels without changing anything
         logging.info("Bind cancelled (Escape)")
     else:
@@ -1414,6 +1492,8 @@ def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
             TEACH_KEY = key
         elif mode == "capture_key":
             CAPTURE_KEY = key
+        elif mode == "repaste_key":
+            REPASTE_KEY = key
         logging.info(f"Bound {mode} → {_key_label(key)}")
         save_settings()
     with _binding_lock:
@@ -1506,6 +1586,9 @@ def on_press(key):
             # Clipboard + key-send work off-thread so the listener never blocks
             threading.Thread(target=teach_from_selection, daemon=True).start()
 
+        elif key == REPASTE_KEY:
+            threading.Thread(target=repaste_last, daemon=True).start()
+
     except Exception as e:
         logging.exception("Error in on_press")
 
@@ -1544,7 +1627,7 @@ def on_release(key):
                     cleaned, press_enter = process_commands(text, radio=False)
                     if cleaned:
                         cleaned = llm_cleanup(cleaned)
-                    deliver_text(cleaned, press_enter)
+                    deliver_text(cleaned, press_enter, raw=text)
                 else:
                     logging.info("No speech detected")
             else:
@@ -1617,7 +1700,7 @@ def on_click(x, y, button, pressed):
                         cleaned, press_enter = process_commands(text, radio=False)
                         if cleaned:
                             cleaned = llm_cleanup(cleaned)
-                        deliver_text(cleaned, press_enter)
+                        deliver_text(cleaned, press_enter, raw=text)
                     else:
                         logging.info("No speech detected")
                 else:
