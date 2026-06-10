@@ -95,11 +95,16 @@ TEACH_KEY        = keyboard.Key.f7       # learn corrections from selected fixed
 CAPTURE_KEY      = keyboard.Key.f15      # note-capture PTT: open CAPTURE_URI, record, paste into it
 PTT_MOUSE_BUTTON = mouse.Button.x2       # mouse PTT hold (front thumb button)
 
-# Note-capture: on CAPTURE_KEY press the URI template is opened (e.g. an
-# obsidian:// quick-note link) while recording starts; on release the
-# transcription pastes into the newly-focused note. {date} and {time} are
-# substituted URL-encoded. Empty template = capture key disabled.
+# Note-capture: on CAPTURE_KEY press CAPTURE_URI is opened (e.g. an
+# obsidian:// quick-note link) while recording starts. On release the
+# transcription is delivered via CAPTURE_TEXT_URI ({text} placeholder) —
+# appending through the app's own URI handler instead of pasting at the
+# cursor, so cursor races can't misplace the text. If CAPTURE_TEXT_URI is
+# empty, release falls back to a normal clipboard paste at the cursor.
+# {date}/{time}/{text} are substituted URL-encoded. Empty CAPTURE_URI
+# disables the key.
 CAPTURE_URI = ""
+CAPTURE_TEXT_URI = ""
 CAPTURE_WINDOW_HINT = ""   # window-title substring to focus after opening (best-effort)
 
 def _key_to_str(key: keyboard.Key | keyboard.KeyCode) -> str:
@@ -141,7 +146,8 @@ _SETTINGS_DEFAULTS = {
     "vad_enabled": False, "hot_mic": False,
     "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8", "teach_key": "f7",
     "capture_key": "f15", "ptt_mouse_button": "x2",
-    "capture_uri": CAPTURE_URI, "capture_window_hint": CAPTURE_WINDOW_HINT,
+    "capture_uri": CAPTURE_URI, "capture_text_uri": CAPTURE_TEXT_URI,
+    "capture_window_hint": CAPTURE_WINDOW_HINT,
     "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
 }
 
@@ -168,7 +174,8 @@ def save_settings() -> None:
         "teach_key": _key_to_str(TEACH_KEY),
         "capture_key": _key_to_str(CAPTURE_KEY),
         "ptt_mouse_button": _button_to_str(PTT_MOUSE_BUTTON),
-        "capture_uri": CAPTURE_URI, "capture_window_hint": CAPTURE_WINDOW_HINT,
+        "capture_uri": CAPTURE_URI, "capture_text_uri": CAPTURE_TEXT_URI,
+        "capture_window_hint": CAPTURE_WINDOW_HINT,
         "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
     }
     tmp = SETTINGS_FILE + ".tmp"
@@ -346,6 +353,7 @@ hot_mic      = _s["hot_mic"]
 OLLAMA_CLEANUP = bool(_s["ollama_cleanup"])
 OLLAMA_MODEL   = _s["ollama_model"]
 CAPTURE_URI         = _s["capture_uri"]
+CAPTURE_TEXT_URI    = _s["capture_text_uri"]
 CAPTURE_WINDOW_HINT = _s["capture_window_hint"]
 for _attr, _setting, _default in [
     ("PTT_KEY",     "ptt_key",     keyboard.Key.ctrl_r),
@@ -375,6 +383,7 @@ RESTORE_DELAY = 0.12           # seconds after the release beep before un-duckin
 _VOL_TOLERANCE = 0.02          # treat a session within this of its target as restored
 _RESTORE_VERIFY_PASSES = 4     # re-check/re-apply restored volumes up to this many times
 manual_chunks = []  # chunks collected during F9 hold
+_capture_session = False   # current manual recording was started by the capture key
 key_sender = keyboard.Controller()
 
 # ── Device ──────────────────────────────────────────────────────────
@@ -919,6 +928,35 @@ def _open_capture_target():
     except Exception:
         logging.exception("capture: window focus failed (paste follows focus)")
 
+def _append_capture_text(text):
+    """Deliver a capture-session transcript by appending through the app's own
+    URI handler (cursor-independent — a paste at the cursor can race the
+    note-open append and land above the heading)."""
+    now = time.localtime()
+    uri = CAPTURE_TEXT_URI.format(
+        date=urllib.parse.quote(time.strftime("%Y-%m-%d", now)),
+        time=urllib.parse.quote(time.strftime("%H:%M", now)),
+        text=urllib.parse.quote(text),
+    )
+    os.startfile(uri)
+    logging.info(f"capture: appended {len(text)} chars via URI")
+
+def deliver_text(cleaned, press_enter):
+    """Route a manual-session transcript: capture sessions append via URI,
+    plain PTT pastes at the cursor."""
+    global _capture_session
+    try:
+        if _capture_session and CAPTURE_TEXT_URI and cleaned:
+            _append_capture_text(cleaned)
+        elif cleaned or press_enter:
+            paste_text(cleaned, press_enter)
+    except Exception:
+        logging.exception("deliver_text failed, falling back to paste")
+        if cleaned or press_enter:
+            paste_text(cleaned, press_enter)
+    finally:
+        _capture_session = False
+
 # ── Audio callback ──────────────────────────────────────────────────
 def audio_callback(indata, frames, time_info, status):
     try:
@@ -1325,6 +1363,7 @@ def on_press(key):
             return    # don't let the key also trigger its normal action
 
         if key == PTT_KEY or key == CAPTURE_KEY:
+            global _capture_session
             is_capture = (key == CAPTURE_KEY)
             if is_capture and not CAPTURE_URI:
                 logging.warning("capture key pressed but capture_uri is empty — ignoring")
@@ -1337,6 +1376,7 @@ def on_press(key):
                 state = State.MANUAL
             update_tray()
             manual_chunks = []
+            _capture_session = is_capture
             if prev in (State.BUFFERING, State.CHECKING):
                 restore_audio()
                 logging.info("PTT key interrupted VAD recording")
@@ -1412,8 +1452,7 @@ def on_release(key):
                     cleaned, press_enter = process_commands(text, radio=False)
                     if cleaned:
                         cleaned = llm_cleanup(cleaned)
-                    if cleaned or press_enter:
-                        paste_text(cleaned, press_enter)
+                    deliver_text(cleaned, press_enter)
                 else:
                     logging.info("No speech detected")
             else:
@@ -1486,8 +1525,7 @@ def on_click(x, y, button, pressed):
                         cleaned, press_enter = process_commands(text, radio=False)
                         if cleaned:
                             cleaned = llm_cleanup(cleaned)
-                        if cleaned or press_enter:
-                            paste_text(cleaned, press_enter)
+                        deliver_text(cleaned, press_enter)
                     else:
                         logging.info("No speech detected")
                 else:
