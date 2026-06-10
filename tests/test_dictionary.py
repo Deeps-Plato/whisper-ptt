@@ -18,7 +18,8 @@ import sys
 PTT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ptt.py")
 
 FUNCS = ("build_initial_prompt", "apply_corrections",
-         "_norm_word", "_clean_token", "_extract_pairs", "_app_profile_for")
+         "_norm_word", "_clean_token", "_extract_pairs", "_app_profile_for",
+         "_profile_field", "_profile_style")
 
 def load_funcs():
     with open(PTT, "r", encoding="utf-8") as f:
@@ -135,6 +136,19 @@ check("profiles: empty title returns None",
       _app_profile_for("", PROFILES), None)
 check("profiles: empty profiles returns None",
       _app_profile_for("Outlook", {}), None)
+
+# ── object-form profiles (per-app dictionaries) ──────────────────────
+_profile_field = ns["_profile_field"]
+_profile_style = ns["_profile_style"]
+OBJ = {"style": "chat style", "vocab": ["Gothic"], "corrections": {"usc": "UFC"}}
+check("profiles: style from string profile", _profile_style("email style"), "email style")
+check("profiles: style from object profile", _profile_style(OBJ), "chat style")
+check("profiles: style of styleless object is empty", _profile_style({"vocab": ["x"]}), "")
+check("profiles: vocab from object", _profile_field(OBJ, "vocab"), ["Gothic"])
+check("profiles: vocab from string profile is None", _profile_field("email style", "vocab"), None)
+check("profiles: corrections from object", _profile_field(OBJ, "corrections"), {"usc": "UFC"})
+check("profiles: object profile returned whole by matcher",
+      _app_profile_for("#general - Discord", {"discord": OBJ}), OBJ)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

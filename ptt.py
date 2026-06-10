@@ -242,10 +242,11 @@ def build_initial_prompt(d):
     return prompt
 
 def load_dictionary():
-    global _dictionary, EFFECTIVE_PROMPT
+    global _dictionary, EFFECTIVE_PROMPT, _dict_mtime
     try:
         with open(DICT_FILE, "r", encoding="utf-8") as f:
             d = json.load(f)
+        _dict_mtime = os.path.getmtime(DICT_FILE)
     except FileNotFoundError:
         d = _default_dictionary()
         try:
@@ -271,13 +272,40 @@ def load_dictionary():
     return d
 
 def save_dictionary():
+    global _dict_mtime
     tmp = DICT_FILE + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(_dictionary, f, indent=2, ensure_ascii=False)
         os.replace(tmp, DICT_FILE)
+        _dict_mtime = os.path.getmtime(DICT_FILE)
     except Exception:
         logging.exception("save_dictionary failed")
+
+_dict_mtime = 0.0
+
+def _maybe_reload_dictionary():
+    """Hot-reload: if dictionary.json changed on disk (GUI editor, manual edit,
+    another tool), pick it up before the next transcription."""
+    global _dict_mtime
+    try:
+        m = os.path.getmtime(DICT_FILE)
+    except OSError:
+        return
+    if m != _dict_mtime:
+        _dict_mtime = m
+        load_dictionary()
+        logging.info("dictionary: hot-reloaded (file changed on disk)")
+
+# App profiles may be a plain string (style instruction) or an object with
+# optional per-app extensions: {"style": ..., "vocab": [...], "corrections": {...}}
+def _profile_field(profile, key, default=None):
+    return profile.get(key, default) if isinstance(profile, dict) else default
+
+def _profile_style(profile):
+    if isinstance(profile, str):
+        return profile
+    return _profile_field(profile, "style", "") or ""
 
 # ── State machine ───────────────────────────────────────────────────
 class State(Enum):
@@ -468,11 +496,25 @@ def apply_corrections(text, corrections=None):
     return text
 
 def transcribe(audio):
+    _maybe_reload_dictionary()
+    # Per-app dictionary: the focused window's profile can extend the global
+    # vocab (prompt) and corrections for this transcription only.
+    window = _active_window_title()
+    profile = _app_profile_for(window, _dictionary.get("app_profiles"))
+    prompt = EFFECTIVE_PROMPT
+    app_vocab = _profile_field(profile, "vocab") or []
+    if app_vocab:
+        prompt = build_initial_prompt({
+            "prompt_prefix": _dictionary.get("prompt_prefix", ""),
+            "vocab": list(app_vocab) + list(_dictionary.get("vocab") or []),
+        })
     m = load_whisper()
     segments, _ = m.transcribe(audio, language="en", beam_size=5, vad_filter=True,
-                                initial_prompt=EFFECTIVE_PROMPT)
+                                initial_prompt=prompt)
     text = " ".join(seg.text.strip() for seg in segments)
-    return apply_corrections(text)
+    corr = dict(_dictionary.get("corrections") or {})
+    corr.update(_profile_field(profile, "corrections") or {})   # app wins on clash
+    return apply_corrections(text, corr)
 
 # ── Ollama cleanup pass ──────────────────────────────────────────────
 _OLLAMA_INSTRUCTION = (
@@ -535,8 +577,9 @@ def llm_cleanup(text):
     vocab_hint = ", ".join((_dictionary.get("vocab") or [])[:40])
     window = _active_window_title()
     profile = _app_profile_for(window, _dictionary.get("app_profiles"))
+    style = _profile_style(profile)
     if profile is not None and (profile is False
-                                or str(profile).strip().lower() in ("skip", "off", "raw")):
+                                or style.strip().lower() in ("skip", "off", "raw")):
         logging.info(f"ollama: app profile says skip for window {window!r}")
         return text
     prompt = _OLLAMA_INSTRUCTION
@@ -546,8 +589,8 @@ def llm_cleanup(text):
         # App context (window TITLE only — content is never read): lets the
         # model match register, e.g. an email vs a quick note vs a chat.
         prompt += f"\nThe text is being dictated into this window: {window}"
-    if profile:
-        prompt += f"\nStyle for this app: {profile}"
+    if style:
+        prompt += f"\nStyle for this app: {style}"
     prompt += f"\n\nText: {text}"
     body = json.dumps({
         "model": OLLAMA_MODEL,
@@ -1525,6 +1568,17 @@ def _on_open_dict(icon, item):
     except Exception:
         logging.exception("open dictionary.json failed")
 
+def _on_edit_dict_gui(icon, item):
+    """Launch the dictionary editor GUI as its own process. Saves hot-apply on
+    the next dictation via the mtime reload — no restart needed."""
+    try:
+        import subprocess
+        editor = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "dictionary_editor.py")
+        subprocess.Popen([sys.executable, editor], close_fds=True)
+    except Exception:
+        logging.exception("launch dictionary editor failed")
+
 def _on_restart(icon, item):
     _restart_event.set()
 
@@ -1580,6 +1634,7 @@ def build_menu():
                               (_dictionary.get("_teach_history") or [{}])[-1].get("pairs", [])[:2]) + ")")
                              if (_dictionary.get("_teach_history") or []) else " (none)")),
             _on_undo_teach),
+        pystray.MenuItem("Edit dictionary (GUI)",  _on_edit_dict_gui),
         pystray.MenuItem("Reload dictionary.json", _on_reload_dict),
         pystray.MenuItem("Open dictionary.json",   _on_open_dict),
         pystray.Menu.SEPARATOR,
