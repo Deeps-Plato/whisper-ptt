@@ -1177,9 +1177,31 @@ def _match_voice_command(text, commands, prefix):
 
     triggers = {k.split()[0].lower() for k in commands if " " in k}
     if words[0] in triggers:
-        keys = {k.lower(): k for k in commands
-                if k.split()[0].lower() == words[0]}   # full-phrase keys
-        return lookup(" ".join(words), keys), True
+        phrase = " ".join(words)
+        family = {k.lower(): k for k in commands
+                  if k.split()[0].lower() == words[0]}   # full-phrase keys
+        plain = {kl: k for kl, k in family.items() if not kl.endswith(" *")}
+        action = lookup(phrase, plain)
+        if action is not None:
+            return action, True
+        # Parameterized keys: "search google *" captures the remainder as the
+        # query — {query} is URL-encoded, {raw} is the spoken text as-is.
+        for kl in sorted(family, key=len, reverse=True):
+            if not kl.endswith(" *"):
+                continue
+            fixed = kl[:-2]
+            if phrase.startswith(fixed + " "):
+                remainder = phrase[len(fixed):].strip()
+                if remainder:
+                    tmpl = commands[family[kl]]
+                    return (tmpl.replace("{query}", urllib.parse.quote_plus(remainder))
+                                .replace("{raw}", remainder)), True
+        # Near-miss (first two words match a key) → consume, beep, paste nothing.
+        # Anything less is ordinary speech — leave it alone.
+        two = " ".join(words[:2])
+        if len(words) >= 2 and any(kl.startswith(two) for kl in family):
+            return None, True
+        return None, False
 
     return None, False
 

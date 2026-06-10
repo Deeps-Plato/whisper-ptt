@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import sys
+import urllib.parse
 
 PTT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ptt.py")
 
@@ -30,6 +31,7 @@ def load_funcs():
     missing = set(FUNCS) - {n.name for n in wanted}
     assert not missing, f"functions not found in ptt.py: {missing}"
     ns = {"re": re, "difflib": difflib, "json": json, "logging": logging,
+          "urllib": urllib,
           "PROMPT_TOKEN_BUDGET": 200, "_dictionary": {"corrections": {}},
           "WAKE_PHRASE": "send it"}
     exec(compile(ast.Module(body=wanted, type_ignores=[]), PTT, "exec"), ns)
@@ -207,6 +209,21 @@ check("voice: classic key still works alongside",
       ("keys:win+shift+s", True))
 check("voice: non-trigger first word untouched",
       _match_voice_command("browsing the rates now", CMDS2, "command"),
+      (None, False))
+
+CMDS3 = {"search google *": "run:start chrome https://www.google.com/search?q={query}",
+         "search reddit *": "run:start chrome https://old.reddit.com/search?q={query}"}
+check("voice: wildcard captures and URL-encodes the query",
+      _match_voice_command("Search Google cheapest liftgate carriers", CMDS3, "command"),
+      ("run:start chrome https://www.google.com/search?q=cheapest+liftgate+carriers", True))
+check("voice: wildcard family routing",
+      _match_voice_command("search reddit gothic remake", CMDS3, "command"),
+      ("run:start chrome https://old.reddit.com/search?q=gothic+remake", True))
+check("voice: near-miss (engine, no query) consumed without action",
+      _match_voice_command("search google", CMDS3, "command"),
+      (None, True))
+check("voice: ordinary 'search ...' speech passes through untouched",
+      _match_voice_command("search the vault for the janszen quote", CMDS3, "command"),
       (None, False))
 
 print(f"\n{passed} passed, {failed} failed")
