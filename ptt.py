@@ -1194,7 +1194,9 @@ def _match_voice_command(text, commands, prefix):
                 remainder = phrase[len(fixed):].strip()
                 if remainder:
                     tmpl = commands[family[kl]]
-                    return (tmpl.replace("{query}", urllib.parse.quote_plus(remainder))
+                    # %20 encoding (not +): every engine accepts it, and some
+                    # (ClassIT) treat a literal + as part of the search text.
+                    return (tmpl.replace("{query}", urllib.parse.quote(remainder, safe=""))
                                 .replace("{raw}", remainder)), True
         # Near-miss (first two words match a key) → consume, beep, paste nothing.
         # Anything less is ordinary speech — leave it alone.
