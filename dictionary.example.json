@@ -1,0 +1,15 @@
+{
+  "prompt_prefix": "Work dictation about software and logistics.",
+  "vocab": [
+    "Ollama",
+    "qwen2.5",
+    "faster-whisper",
+    "InXpress",
+    "NMFC"
+  ],
+  "corrections": {
+    "oh llama": "Ollama",
+    "in express": "InXpress",
+    "cis": "sys"
+  }
+}

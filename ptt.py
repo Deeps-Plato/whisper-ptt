@@ -20,6 +20,8 @@ import threading
 import queue
 import re
 import json
+import difflib
+import urllib.request
 from enum import Enum
 import winsound
 
@@ -78,10 +80,17 @@ LEXICAL_OVERRIDES = {
     "ray": "Rei",
 }
 
+# Ollama cleanup pass (optional LLM polish of transcriptions; tray-toggleable)
+OLLAMA_URL = "http://localhost:11434"
+OLLAMA_MODEL = "qwen2.5:14b"
+OLLAMA_CLEANUP = False           # default off — adds ~0.5-2s latency per dictation
+OLLAMA_TIMEOUT_SECS = 6.0        # on timeout/error we paste the raw transcript instead
+
 # ── Hotkey bindings (overwritten by load_settings at startup) ────────
 PTT_KEY          = keyboard.Key.ctrl_r   # keyboard PTT hold
 HOT_MIC_KEY      = keyboard.Key.f10      # toggle hot mic
 VAD_KEY          = keyboard.Key.f8       # toggle VAD
+TEACH_KEY        = keyboard.Key.f7       # learn corrections from selected fixed text
 PTT_MOUSE_BUTTON = mouse.Button.x2       # mouse PTT hold (front thumb button)
 
 def _key_to_str(key: keyboard.Key | keyboard.KeyCode) -> str:
@@ -120,8 +129,9 @@ SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt-se
 _SETTINGS_DEFAULTS = {
     "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND, "beep_volume": BEEP_VOLUME,
     "device_name": DEVICE_NAME, "vad_enabled": False, "hot_mic": False,
-    "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8",
+    "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8", "teach_key": "f7",
     "ptt_mouse_button": "x2",
+    "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
 }
 
 def load_settings() -> dict:
@@ -143,7 +153,9 @@ def save_settings() -> None:
         "ptt_key": _key_to_str(PTT_KEY),
         "hot_mic_key": _key_to_str(HOT_MIC_KEY),
         "vad_key": _key_to_str(VAD_KEY),
+        "teach_key": _key_to_str(TEACH_KEY),
         "ptt_mouse_button": _button_to_str(PTT_MOUSE_BUTTON),
+        "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
     }
     tmp = SETTINGS_FILE + ".tmp"
     try:
@@ -152,6 +164,83 @@ def save_settings() -> None:
         os.replace(tmp, SETTINGS_FILE)
     except Exception:
         logging.exception("save_settings failed")
+
+# ── Managed dictionary (vocab + corrections) ─────────────────────────
+# dictionary.json next to ptt.py:
+#   prompt_prefix — free-text context fed to Whisper before the vocab list
+#   vocab         — terms Whisper should recognize (ordered most-important first;
+#                   trimmed from the end if the prompt budget is exceeded)
+#   corrections   — {"misheard phrase": "Correct Form"} applied to every transcript
+# Created from the in-code defaults on first run. Machine-local (gitignored).
+DICT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dictionary.json")
+PROMPT_TOKEN_BUDGET = 200   # whisper conditions on the last ~224 prompt tokens; stay under
+                            # so the prefix is never silently pushed out of the window
+
+_dictionary = {"prompt_prefix": "", "vocab": [], "corrections": {}}
+EFFECTIVE_PROMPT = INITIAL_PROMPT
+
+def _default_dictionary():
+    """First-run migration: preserve the legacy in-code INITIAL_PROMPT and
+    LEXICAL_OVERRIDES so behavior is unchanged until the user edits the file."""
+    return {
+        "prompt_prefix": INITIAL_PROMPT,
+        "vocab": [],
+        "corrections": dict(LEXICAL_OVERRIDES),
+    }
+
+def build_initial_prompt(d):
+    vocab = list(dict.fromkeys(d.get("vocab") or []))   # dedupe, keep order
+    prefix = (d.get("prompt_prefix") or "").strip()
+
+    def render(words):
+        parts = [prefix] if prefix else []
+        if words:
+            parts.append("Vocabulary: " + ", ".join(words) + ".")
+        return " ".join(parts)
+
+    prompt = render(vocab)
+    while vocab and len(prompt) // 3 > PROMPT_TOKEN_BUDGET:   # ~3 chars/token heuristic
+        vocab.pop()
+        prompt = render(vocab)
+    if len(prompt) // 3 > PROMPT_TOKEN_BUDGET:
+        logging.warning("dictionary: prompt_prefix alone exceeds the prompt budget")
+    return prompt
+
+def load_dictionary():
+    global _dictionary, EFFECTIVE_PROMPT
+    try:
+        with open(DICT_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        d = _default_dictionary()
+        try:
+            with open(DICT_FILE, "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=2, ensure_ascii=False)
+            logging.info(f"dictionary: created {DICT_FILE} from in-code defaults")
+        except Exception:
+            logging.exception("dictionary: could not write default file")
+    except Exception:
+        logging.exception("dictionary: load failed, using in-code defaults")
+        d = _default_dictionary()
+    if not isinstance(d, dict):
+        d = _default_dictionary()
+    d.setdefault("prompt_prefix", "")
+    d.setdefault("vocab", [])
+    d.setdefault("corrections", {})
+    _dictionary = d
+    EFFECTIVE_PROMPT = build_initial_prompt(d)
+    logging.info(f"dictionary: {len(d['vocab'])} vocab terms, "
+                 f"{len(d['corrections'])} corrections")
+    return d
+
+def save_dictionary():
+    tmp = DICT_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_dictionary, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, DICT_FILE)
+    except Exception:
+        logging.exception("save_dictionary failed")
 
 # ── State machine ───────────────────────────────────────────────────
 class State(Enum):
@@ -239,10 +328,13 @@ BEEP_VOLUME  = _s["beep_volume"]
 DEVICE_NAME  = _s["device_name"]
 vad_enabled  = _s["vad_enabled"]
 hot_mic      = _s["hot_mic"]
+OLLAMA_CLEANUP = bool(_s["ollama_cleanup"])
+OLLAMA_MODEL   = _s["ollama_model"]
 for _attr, _setting, _default in [
     ("PTT_KEY",     "ptt_key",     keyboard.Key.ctrl_r),
     ("HOT_MIC_KEY", "hot_mic_key", keyboard.Key.f10),
     ("VAD_KEY",     "vad_key",     keyboard.Key.f8),
+    ("TEACH_KEY",   "teach_key",   keyboard.Key.f7),
 ]:
     try:
         globals()[_attr] = _str_to_key(_s[_setting])
@@ -252,6 +344,8 @@ try:
     PTT_MOUSE_BUTTON = _str_to_button(_s["ptt_mouse_button"])
 except (KeyError, AttributeError):
     PTT_MOUSE_BUTTON = mouse.Button.x2
+
+load_dictionary()   # builds EFFECTIVE_PROMPT; creates dictionary.json on first run
 
 # ── Globals ─────────────────────────────────────────────────────────
 whisper_model = None
@@ -306,20 +400,64 @@ def load_whisper():
     logging.error("All whisper compute types failed")
     raise last_err
 
-def apply_lexical_overrides(text):
-    """Force preferred token replacements on Whisper output."""
+def apply_corrections(text, corrections=None):
+    """Force preferred replacements on Whisper output (case-insensitive,
+    whole-word, multi-word keys supported). Longest keys first so
+    "us web ship" wins over "web ship"."""
     if not text:
         return text
-    for source, target in LEXICAL_OVERRIDES.items():
-        text = re.sub(rf'\b{re.escape(source)}\b', target, text, flags=re.IGNORECASE)
+    corr = corrections if corrections is not None else _dictionary.get("corrections") or {}
+    for source in sorted(corr, key=len, reverse=True):
+        text = re.sub(rf'\b{re.escape(source)}\b', corr[source], text, flags=re.IGNORECASE)
     return text
 
 def transcribe(audio):
     m = load_whisper()
     segments, _ = m.transcribe(audio, language="en", beam_size=5, vad_filter=True,
-                                initial_prompt=INITIAL_PROMPT)
+                                initial_prompt=EFFECTIVE_PROMPT)
     text = " ".join(seg.text.strip() for seg in segments)
-    return apply_lexical_overrides(text)
+    return apply_corrections(text)
+
+# ── Ollama cleanup pass ──────────────────────────────────────────────
+_OLLAMA_INSTRUCTION = (
+    "Fix transcription errors, capitalization, and punctuation in the dictated text. "
+    "Do NOT rephrase, summarize, expand, or add content. Preserve all symbols, "
+    "slashes, numbers, and line breaks exactly. Return ONLY the corrected text."
+)
+
+def llm_cleanup(text):
+    """Optional local-LLM polish via Ollama. Hard timeout; any failure returns
+    the raw transcript so dictation never hangs on a cold/slow model (a timed-out
+    request still warms the model server-side for the next one)."""
+    if not OLLAMA_CLEANUP or not text or not text.strip():
+        return text
+    vocab_hint = ", ".join((_dictionary.get("vocab") or [])[:40])
+    prompt = _OLLAMA_INSTRUCTION
+    if vocab_hint:
+        prompt += f"\nKnown vocabulary (use these exact spellings): {vocab_hint}"
+    prompt += f"\n\nText: {text}"
+    body = json.dumps({
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": "30m",
+        "options": {"temperature": 0},
+    }).encode("utf-8")
+    try:
+        req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_SECS) as r:
+            out = json.loads(r.read().decode("utf-8")).get("response", "").strip()
+        out = out.strip('"').strip()
+        # Guardrail: the model must not rewrite/expand — big length drift means
+        # it disobeyed (hallucinated or summarized), so keep the raw transcript.
+        if not out or len(out) > len(text) * 1.6 + 20 or len(out) < len(text) * 0.4:
+            logging.warning("ollama: output failed sanity check, using raw text")
+            return text
+        return out
+    except Exception as e:
+        logging.warning(f"ollama cleanup unavailable ({e}); using raw text")
+        return text
 
 # ── Audio ducking ───────────────────────────────────────────────────
 def _session_key(s):
@@ -591,10 +729,15 @@ def _is_terminal_like_window():
         return True, title
     return any(hint in title for hint in TERMINAL_TITLE_HINTS), title
 
+_last_pasted_text = ""   # most recent injected dictation — diff target for teach mode
+
 def paste_text(text, press_enter=False):
     """Type into terminal-like windows, otherwise clipboard-paste with restore."""
+    global _last_pasted_text
     if not text and not press_enter:
         return
+    if text:
+        _last_pasted_text = text
 
     old_clip = None
     used_direct_type = False
@@ -626,6 +769,103 @@ def paste_text(text, press_enter=False):
 
     if old_clip is not None:
         pyperclip.copy(old_clip)
+
+# ── Teach mode (Wispr-style correction learning, explicit gesture) ───
+# Fix the pasted text in place, select the corrected version, hit the teach key.
+# We diff the selection against what we last injected, extract the changed word
+# pairs, and add them to the dictionary — corrections map + vocab. No passive
+# monitoring of what you type; learning only happens on the explicit gesture.
+
+def _norm_word(w):
+    """Normalize a word for diff alignment: lowercase, strip outer punctuation."""
+    return re.sub(r"^[^\w&$@#~/]+|[^\w&$@#~/%+)\]]+$", "", w).lower()
+
+def _clean_token(w):
+    """Strip sentence punctuation from a learned token, keep inner symbols."""
+    return re.sub(r"^[\"'(\[]+|[\"')\],.:;!?]+$", "", w)
+
+def _extract_pairs(original, corrected, max_words=4):
+    """Word-level diff → (misheard, correct) pairs.
+
+    Only small 'replace' runs count — insertions/deletions are content edits,
+    not mishearings. Case-only changes are harvested from 'equal' runs too,
+    but only non-trivial casing (NMFC, TForce, InXpress): plain Capitalized
+    forms are sentence mechanics and would over-learn common words."""
+    ow, cw = original.split(), corrected.split()
+    sm = difflib.SequenceMatcher(a=[_norm_word(w) for w in ow],
+                                 b=[_norm_word(w) for w in cw], autojunk=False)
+    pairs = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "replace" and (i2 - i1) <= max_words and (j2 - j1) <= max_words:
+            wrong = " ".join(_norm_word(w) for w in ow[i1:i2]).strip()
+            right = " ".join(_clean_token(w) for w in cw[j1:j2]).strip()
+            if wrong and right and wrong != right.lower():
+                pairs.append((wrong, right))
+        elif tag == "equal":
+            for k in range(i2 - i1):
+                o, c = ow[i1 + k], cw[j1 + k]
+                oc, cc = _clean_token(o), _clean_token(c)
+                if oc == cc or oc.lower() != cc.lower():
+                    continue   # identical, or not a pure case change
+                if cc == oc.capitalize():
+                    continue   # ordinary capitalization, not jargon casing
+                pairs.append((oc.lower(), cc))
+    return pairs
+
+def teach_from_selection():
+    """Learn corrections by diffing the user's selected (fixed) text against
+    the last injected dictation."""
+    global EFFECTIVE_PROMPT
+    last = (_last_pasted_text or "").strip()
+    if not last:
+        beep_async([(400, 120)])
+        logging.info("teach: nothing was dictated yet")
+        return
+    try:
+        old_clip = pyperclip.paste()
+    except Exception:
+        old_clip = ""
+    try:
+        pyautogui.hotkey('ctrl', 'c')
+        time.sleep(0.15)
+        corrected = (pyperclip.paste() or "").strip()
+    except Exception:
+        logging.exception("teach: could not read selection")
+        corrected = ""
+    finally:
+        try:
+            pyperclip.copy(old_clip)
+        except Exception:
+            pass
+    if not corrected or corrected == old_clip.strip():
+        beep_async([(400, 120)])
+        logging.info("teach: no selection captured (select the corrected text first)")
+        return
+    if corrected == last:
+        beep_async([(400, 120)])
+        logging.info("teach: selection identical to last dictation, nothing to learn")
+        return
+
+    pairs = _extract_pairs(last, corrected)
+    if not pairs:
+        beep_async([(400, 120)])
+        logging.info("teach: no learnable word-level differences found")
+        return
+
+    for wrong, right in pairs:
+        _dictionary["corrections"][wrong] = right
+        # New proper nouns also go in vocab so Whisper can get them right
+        # first try next time (single tokens with a capital or digit).
+        if (" " not in right and right not in _dictionary["vocab"]
+                and any(ch.isupper() or ch.isdigit() for ch in right)):
+            _dictionary["vocab"].append(right)
+    save_dictionary()
+    EFFECTIVE_PROMPT = build_initial_prompt(_dictionary)
+    learned = ", ".join(f"{w}→{r}" for w, r in pairs)
+    logging.info(f"teach: learned {learned}")
+    beep_async([(523, 70), (659, 70), (784, 90)])   # success arpeggio
+    if _tray_icon:
+        _tray_icon.title = f"Learned: {learned[:96]}"
 
 # ── Audio callback ──────────────────────────────────────────────────
 def audio_callback(indata, frames, time_info, status):
@@ -748,6 +988,8 @@ def vad_monitor():
                     logging.info(f"Hot mic: '{text}'")
                     duck_audio()
                     cleaned, press_enter = process_commands(text)
+                    if cleaned:
+                        cleaned = llm_cleanup(cleaned)
                     if cleaned or press_enter:
                         paste_text(cleaned, press_enter)
                     restore_audio()
@@ -762,6 +1004,8 @@ def vad_monitor():
                     logging.info(f"Complete utterance: '{text}'")
                     duck_audio()
                     cleaned, press_enter = process_commands(text)
+                    if cleaned:
+                        cleaned = llm_cleanup(cleaned)
                     if cleaned or press_enter:
                         paste_text(cleaned, press_enter)
                     restore_audio()
@@ -872,6 +1116,26 @@ def _on_bind(target: str):
         logging.info(f"Binding mode: {target}")
     return cb
 
+def _on_toggle_ollama(icon, item):
+    global OLLAMA_CLEANUP
+    OLLAMA_CLEANUP = not OLLAMA_CLEANUP
+    save_settings()
+    update_tray()
+
+def _on_teach(icon, item):
+    threading.Thread(target=teach_from_selection, daemon=True).start()
+
+def _on_reload_dict(icon, item):
+    load_dictionary()
+    beep_async([(659, 70), (784, 70)])
+    update_tray()
+
+def _on_open_dict(icon, item):
+    try:
+        os.startfile(DICT_FILE)
+    except Exception:
+        logging.exception("open dictionary.json failed")
+
 def _on_restart(icon, item):
     _restart_event.set()
 
@@ -903,6 +1167,8 @@ def build_menu():
                          _on_bind("hot_mic_key")),
         pystray.MenuItem(lambda item: f"VAD key: {_key_label(VAD_KEY)}",
                          _on_bind("vad_key")),
+        pystray.MenuItem(lambda item: f"Teach key: {_key_label(TEACH_KEY)}",
+                         _on_bind("teach_key")),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(lambda item: f"PTT mouse button: {_button_label(PTT_MOUSE_BUTTON)}",
                          _on_bind("ptt_mouse_button")),
@@ -910,12 +1176,25 @@ def build_menu():
         pystray.MenuItem("(click an entry, then press the new key / mouse button — Esc cancels)",
                          None, enabled=False),
     )
+    dict_items = pystray.Menu(
+        pystray.MenuItem(lambda item: f"Teach from selection ({_key_label(TEACH_KEY)})",
+                         _on_teach),
+        pystray.MenuItem("Reload dictionary.json", _on_reload_dict),
+        pystray.MenuItem("Open dictionary.json",   _on_open_dict),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(lambda item: (f"{len(_dictionary['vocab'])} vocab / "
+                                       f"{len(_dictionary['corrections'])} corrections"),
+                         None, enabled=False),
+    )
     return pystray.Menu(
         pystray.MenuItem(lambda item: f"PTT: {state.name}", None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("VAD enabled", _on_toggle_vad, checked=lambda item: vad_enabled),
         pystray.MenuItem("Hot mic",     _on_toggle_hot_mic, checked=lambda item: hot_mic),
+        pystray.MenuItem(lambda item: f"Ollama cleanup ({OLLAMA_MODEL})",
+                         _on_toggle_ollama, checked=lambda item: OLLAMA_CLEANUP),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Dictionary",   dict_items),
         pystray.MenuItem("Duck level",   pystray.Menu(*duck_items)),
         pystray.MenuItem("Beep backend", pystray.Menu(*beep_items)),
         pystray.MenuItem("Beep volume",  pystray.Menu(*beep_vol_items)),
@@ -937,7 +1216,7 @@ def start_tray():
 # ── Binding capture ──────────────────────────────────────────────────
 def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
     """Assign the captured key to the binding target and persist."""
-    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, _binding_mode
+    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, TEACH_KEY, _binding_mode
     if key == keyboard.Key.esc:          # Escape cancels without changing anything
         logging.info("Bind cancelled (Escape)")
     else:
@@ -947,6 +1226,8 @@ def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
             HOT_MIC_KEY = key
         elif mode == "vad_key":
             VAD_KEY = key
+        elif mode == "teach_key":
+            TEACH_KEY = key
         logging.info(f"Bound {mode} → {_key_label(key)}")
         save_settings()
     with _binding_lock:
@@ -1026,6 +1307,10 @@ def on_press(key):
             beep_async([(800 if vad_enabled else 400, 150)])
             update_tray()
 
+        elif key == TEACH_KEY:
+            # Clipboard + key-send work off-thread so the listener never blocks
+            threading.Thread(target=teach_from_selection, daemon=True).start()
+
     except Exception as e:
         logging.exception("Error in on_press")
 
@@ -1062,6 +1347,8 @@ def on_release(key):
                 if text.strip():
                     logging.info(f"F9 raw: {text}")
                     cleaned, press_enter = process_commands(text, radio=False)
+                    if cleaned:
+                        cleaned = llm_cleanup(cleaned)
                     if cleaned or press_enter:
                         paste_text(cleaned, press_enter)
                 else:
@@ -1134,6 +1421,8 @@ def on_click(x, y, button, pressed):
                     if text.strip():
                         logging.info(f"Thumb button raw: {text}")
                         cleaned, press_enter = process_commands(text, radio=False)
+                        if cleaned:
+                            cleaned = llm_cleanup(cleaned)
                         if cleaned or press_enter:
                             paste_text(cleaned, press_enter)
                     else:

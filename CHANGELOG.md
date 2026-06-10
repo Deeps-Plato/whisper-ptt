@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-06-09
+
+- **Managed dictionary**: vocab + corrections move from in-code constants to
+  `dictionary.json` (auto-created on first run from the legacy `INITIAL_PROMPT` /
+  `LEXICAL_OVERRIDES`, so behavior is unchanged until edited; machine-local, gitignored;
+  `dictionary.example.json` documents the schema). Whisper's prompt is built from
+  `prompt_prefix` + `vocab` and trimmed to a ~200-token budget from the tail so the most
+  important terms always survive. Corrections are case-insensitive whole-word replacements,
+  multi-word keys supported, longest key wins. Tray → **Dictionary** submenu: teach from
+  selection, reload without restart, open the file, live vocab/correction counts
+- **Teach mode** (F7, rebindable via tray → Hotkeys): fix a dictation where it was pasted,
+  select the corrected text, press the teach key — the script diffs the selection against
+  the last injected transcript, learns the changed word pairs into `corrections`, and adds
+  new proper nouns to `vocab`. Only small word-level replacements are learned; insertions/
+  deletions are content edits, and plain sentence capitalization is ignored so common words
+  are never over-learned. Success = rising arpeggio, nothing-learned = single low beep
+- **Ollama cleanup pass** (optional, off by default, tray-toggleable): pipes each transcript
+  through a local Ollama model (`qwen2.5:14b` default) to fix casing/punctuation with a
+  strict no-rephrasing instruction, dictionary vocab as spelling hints, temperature 0, a
+  hard 6 s timeout, and a length sanity check — any failure falls back to the raw transcript
+  so dictation never hangs. Persisted as `ollama_cleanup` / `ollama_model` in settings
+- Tests: `tests/test_dictionary.py` covers the corrections/prompt/teach-diff pipeline via
+  AST extraction (runs without torch/pynput installed): `python tests/test_dictionary.py`
+
 ## 2026-06-03 (later)
 
 - Audio sessions are now matched by their Windows session-instance id instead of by list

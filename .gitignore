@@ -8,4 +8,5 @@ GEMINI.md
 .env.*
 # Machine-local runtime config & generated assets
 ptt-settings.json
+dictionary.json
 whisper-ptt.ico

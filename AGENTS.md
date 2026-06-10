@@ -24,14 +24,24 @@ Scheduled task `WhisperPTT` runs `pythonw.exe ptt.py` directly at logon (no bat 
 ## Config (top of ptt.py)
 - `DEVICE_NAME` — mic name (default: "Volt 2")
 - `MODEL_SIZE` — whisper model (default: "base")
-- `INITIAL_PROMPT` — custom vocab
+- `INITIAL_PROMPT` — legacy in-code vocab (first-run seed for `dictionary.json`)
 - `DUCK_LEVEL` — audio ducking during transcription
 - `BEEP_BACKEND` — beep output backend (`"winsound"` default, or `"sounddevice"` fallback)
+- `OLLAMA_MODEL` / `OLLAMA_URL` — optional LLM cleanup pass (off by default)
+
+## Dictionary
+- `dictionary.json` (machine-local, auto-created): `prompt_prefix`, `vocab`,
+  `corrections`. Edit + tray → Dictionary → Reload. Teach key (F7) learns
+  corrections by diffing the user's selected fix against the last paste.
 
 ## Hotkeys
 - F9 / middle mouse: hold to record
 - F10: toggle hot mic (continuous VAD)
 - F8: toggle VAD on/off
+- F7: teach (learn corrections from selected fixed text)
+
+## Tests
+- `python tests/test_dictionary.py` — text pipeline only, no heavy deps needed
 
 ## Restart (Hard Rule)
 When user reports PTT is down/offline/not working, run immediately — no confirmation needed.

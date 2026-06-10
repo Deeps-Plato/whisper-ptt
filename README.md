@@ -102,6 +102,9 @@ Say punctuation names to insert symbols:
 |------|---------|
 | `ptt.py` | Main script - faster-whisper with pynput hotkey listener |
 | `ptt-settings.json` | Persisted settings (duck level, beep backend, mic, VAD, hotkeys) — auto-created |
+| `dictionary.json` | Managed vocab + corrections (auto-created, machine-local) |
+| `dictionary.example.json` | Schema example for the managed dictionary |
+| `tests/test_dictionary.py` | Tests for the dictionary/teach text pipeline (`python tests/test_dictionary.py`) |
 | `start-ptt.bat` | Legacy launcher (scheduled task now calls pythonw directly) |
 | `install-desktop-icon.bat` | Double-click to create a "Whisper PTT" desktop shortcut |
 | `install-desktop-icon.ps1` | PowerShell installer that builds the desktop shortcut |
@@ -136,6 +139,7 @@ Default bindings:
 | Right Ctrl / front thumb button (x2) | Hold to record, release to transcribe (PTT) |
 | F10 | Toggle hot mic (continuous voice-activated dictation) |
 | F8 | Toggle VAD on/off |
+| F7 | Teach: learn corrections from the selected fixed text |
 
 Rebind any hotkey — including the **PTT mouse button** — interactively via the system tray: right-click the tray icon → **Hotkeys** → click the binding you want to change → press the new key (or click the new mouse button; Esc to cancel). Side buttons (X1/X2) and the middle button work as the PTT mouse button; left/right click are reserved and ignored while binding. Bindings persist to `ptt-settings.json` and reload on next start.
 
@@ -153,6 +157,8 @@ A tray icon appears in the Windows notification area showing PTT state at a glan
 Right-click the tray icon to access settings without editing `ptt.py`:
 
 - **VAD enabled** / **Hot mic** — toggle with a checkmark
+- **Ollama cleanup** — toggle the optional local-LLM polish pass
+- **Dictionary** — teach from selection, reload or open `dictionary.json`, live counts
 - **Duck level** — 0%, 5%, 10%, 25%, 50% (radio buttons)
 - **Beep backend** — winsound or sounddevice
 - **Beep volume** — Off, 5%, 10%, 15%, 25% (sounddevice only; plays a preview on change)
@@ -163,15 +169,58 @@ Right-click the tray icon to access settings without editing `ptt.py`:
 
 All settings persist to `ptt-settings.json` immediately on change and reload on next launch.
 
-## Adding Words to Prompt
+## Managed Dictionary
 
-To improve transcription of proper nouns, technical terms, or commonly misheard words, add them to `INITIAL_PROMPT` in `ptt.py`:
+Vocabulary and corrections live in `dictionary.json` next to `ptt.py` (created
+automatically on first run from the in-code defaults, machine-local, gitignored).
+See `dictionary.example.json` for the schema:
 
-```python
-INITIAL_PROMPT = "Conversation with Rei. Ollama, model, WSL, NewWord, AnotherTerm."
+```json
+{
+  "prompt_prefix": "Work dictation about software and logistics.",
+  "vocab": ["Ollama", "InXpress", "NMFC"],
+  "corrections": { "oh llama": "Ollama", "in express": "InXpress" }
+}
 ```
 
-Restart the script after changes.
+- **`vocab`** — terms fed to Whisper as prompt context so it recognizes them.
+  Ordered most-important-first: if the list exceeds Whisper's ~224-token prompt
+  window, the tail is trimmed, never the head.
+- **`corrections`** — deterministic post-transcription replacements
+  (case-insensitive, whole-word, multi-word keys supported, longest key wins).
+  Use for words Whisper keeps mishearing the same way.
+- **`prompt_prefix`** — free-text context placed before the vocab list.
+
+Edit the file any time, then tray → **Dictionary → Reload dictionary.json**
+(no restart needed). The tray also shows live vocab/correction counts.
+
+### Teach Mode (learn from your corrections)
+
+When a dictation comes out wrong, fix it **in place** wherever it was pasted,
+select the corrected text, and press the **teach key** (default **F7**, rebindable).
+The script diffs your selection against what it last injected, extracts the
+changed word pairs, and saves them to the dictionary automatically:
+
+1. Dictate → it pastes `meet jansen at tea force freight`
+2. Fix the text → `meet Janszen at TForce Freight`, select the sentence, press **F7**
+3. Learned: `jansen → Janszen`, `tea force → TForce` — corrections apply to every
+   future dictation, and new proper nouns are added to `vocab` so Whisper gets
+   them right at transcription time too.
+
+A rising arpeggio confirms a successful learn; a single low beep means nothing
+learnable was found. Only small word-level *replacements* are learned —
+insertions/deletions are treated as content edits, and plain sentence
+capitalization is ignored so common words are never over-learned.
+
+### Ollama Cleanup (optional LLM polish)
+
+If you run [Ollama](https://ollama.com) locally, toggle tray → **Ollama cleanup**
+to pipe each transcript through a local LLM that fixes transcription errors,
+casing, and punctuation (strictly no rephrasing — output failing a length sanity
+check is discarded). Configure via `OLLAMA_MODEL` / `OLLAMA_URL` in `ptt.py`
+(default `qwen2.5:14b` on `localhost:11434`; persisted to `ptt-settings.json`).
+Adds ~0.5–2 s per dictation depending on model and GPU; any error or timeout
+falls back to the raw transcript, so dictation never hangs. Off by default.
 
 ## Running
 
