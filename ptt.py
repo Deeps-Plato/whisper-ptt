@@ -22,6 +22,7 @@ import re
 import json
 import difflib
 import urllib.request
+import urllib.parse
 from enum import Enum
 import winsound
 
@@ -91,7 +92,15 @@ PTT_KEY          = keyboard.Key.ctrl_r   # keyboard PTT hold
 HOT_MIC_KEY      = keyboard.Key.f10      # toggle hot mic
 VAD_KEY          = keyboard.Key.f8       # toggle VAD
 TEACH_KEY        = keyboard.Key.f7       # learn corrections from selected fixed text
+CAPTURE_KEY      = keyboard.Key.f15      # note-capture PTT: open CAPTURE_URI, record, paste into it
 PTT_MOUSE_BUTTON = mouse.Button.x2       # mouse PTT hold (front thumb button)
+
+# Note-capture: on CAPTURE_KEY press the URI template is opened (e.g. an
+# obsidian:// quick-note link) while recording starts; on release the
+# transcription pastes into the newly-focused note. {date} and {time} are
+# substituted URL-encoded. Empty template = capture key disabled.
+CAPTURE_URI = ""
+CAPTURE_WINDOW_HINT = ""   # window-title substring to focus after opening (best-effort)
 
 def _key_to_str(key: keyboard.Key | keyboard.KeyCode) -> str:
     """Serialize a pynput key to a JSON-safe string."""
@@ -131,7 +140,8 @@ _SETTINGS_DEFAULTS = {
     "device_name": DEVICE_NAME, "model_size": MODEL_SIZE,
     "vad_enabled": False, "hot_mic": False,
     "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8", "teach_key": "f7",
-    "ptt_mouse_button": "x2",
+    "capture_key": "f15", "ptt_mouse_button": "x2",
+    "capture_uri": CAPTURE_URI, "capture_window_hint": CAPTURE_WINDOW_HINT,
     "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
 }
 
@@ -156,7 +166,9 @@ def save_settings() -> None:
         "hot_mic_key": _key_to_str(HOT_MIC_KEY),
         "vad_key": _key_to_str(VAD_KEY),
         "teach_key": _key_to_str(TEACH_KEY),
+        "capture_key": _key_to_str(CAPTURE_KEY),
         "ptt_mouse_button": _button_to_str(PTT_MOUSE_BUTTON),
+        "capture_uri": CAPTURE_URI, "capture_window_hint": CAPTURE_WINDOW_HINT,
         "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
     }
     tmp = SETTINGS_FILE + ".tmp"
@@ -333,11 +345,14 @@ vad_enabled  = _s["vad_enabled"]
 hot_mic      = _s["hot_mic"]
 OLLAMA_CLEANUP = bool(_s["ollama_cleanup"])
 OLLAMA_MODEL   = _s["ollama_model"]
+CAPTURE_URI         = _s["capture_uri"]
+CAPTURE_WINDOW_HINT = _s["capture_window_hint"]
 for _attr, _setting, _default in [
     ("PTT_KEY",     "ptt_key",     keyboard.Key.ctrl_r),
     ("HOT_MIC_KEY", "hot_mic_key", keyboard.Key.f10),
     ("VAD_KEY",     "vad_key",     keyboard.Key.f8),
     ("TEACH_KEY",   "teach_key",   keyboard.Key.f7),
+    ("CAPTURE_KEY", "capture_key", keyboard.Key.f15),
 ]:
     try:
         globals()[_attr] = _str_to_key(_s[_setting])
@@ -870,6 +885,40 @@ def teach_from_selection():
     if _tray_icon:
         _tray_icon.title = f"Learned: {learned[:96]}"
 
+# ── Note-capture PTT ─────────────────────────────────────────────────
+def _open_capture_target():
+    """Open the capture URI (e.g. an obsidian:// quick-note link) and focus the
+    target window, while recording is already running. {date}/{time} in the
+    template are substituted URL-encoded. Best-effort: any failure just means
+    the paste lands wherever focus is, same as plain PTT."""
+    try:
+        now = time.localtime()
+        uri = CAPTURE_URI.format(
+            date=urllib.parse.quote(time.strftime("%Y-%m-%d", now)),
+            time=urllib.parse.quote(time.strftime("%H:%M", now)),
+        )
+        os.startfile(uri)
+        logging.info(f"capture: opened {uri}")
+    except Exception:
+        logging.exception("capture: could not open URI")
+        return
+    if not CAPTURE_WINDOW_HINT:
+        return
+    try:
+        import pygetwindow as gw
+        time.sleep(0.9)   # let the app raise the note
+        wins = [w for w in gw.getAllWindows()
+                if CAPTURE_WINDOW_HINT.lower() in (w.title or "").lower()]
+        if wins:
+            wins[0].activate()
+            time.sleep(0.25)
+            with key_sender.pressed(keyboard.Key.ctrl):
+                key_sender.press(keyboard.Key.end)
+                key_sender.release(keyboard.Key.end)
+            logging.info(f"capture: focused '{wins[0].title}', cursor to end")
+    except Exception:
+        logging.exception("capture: window focus failed (paste follows focus)")
+
 # ── Audio callback ──────────────────────────────────────────────────
 def audio_callback(indata, frames, time_info, status):
     try:
@@ -1172,6 +1221,8 @@ def build_menu():
                          _on_bind("vad_key")),
         pystray.MenuItem(lambda item: f"Teach key: {_key_label(TEACH_KEY)}",
                          _on_bind("teach_key")),
+        pystray.MenuItem(lambda item: f"Capture key: {_key_label(CAPTURE_KEY)}",
+                         _on_bind("capture_key")),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(lambda item: f"PTT mouse button: {_button_label(PTT_MOUSE_BUTTON)}",
                          _on_bind("ptt_mouse_button")),
@@ -1219,7 +1270,7 @@ def start_tray():
 # ── Binding capture ──────────────────────────────────────────────────
 def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
     """Assign the captured key to the binding target and persist."""
-    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, TEACH_KEY, _binding_mode
+    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, TEACH_KEY, CAPTURE_KEY, _binding_mode
     if key == keyboard.Key.esc:          # Escape cancels without changing anything
         logging.info("Bind cancelled (Escape)")
     else:
@@ -1231,6 +1282,8 @@ def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
             VAD_KEY = key
         elif mode == "teach_key":
             TEACH_KEY = key
+        elif mode == "capture_key":
+            CAPTURE_KEY = key
         logging.info(f"Bound {mode} → {_key_label(key)}")
         save_settings()
     with _binding_lock:
@@ -1271,7 +1324,11 @@ def on_press(key):
             _finish_bind(mode, key)
             return    # don't let the key also trigger its normal action
 
-        if key == PTT_KEY:
+        if key == PTT_KEY or key == CAPTURE_KEY:
+            is_capture = (key == CAPTURE_KEY)
+            if is_capture and not CAPTURE_URI:
+                logging.warning("capture key pressed but capture_uri is empty — ignoring")
+                return
             with state_lock:
                 if state == State.MANUAL:
                     return  # already recording
@@ -1282,11 +1339,14 @@ def on_press(key):
             manual_chunks = []
             if prev in (State.BUFFERING, State.CHECKING):
                 restore_audio()
-                logging.info("RCtrl interrupted VAD recording")
+                logging.info("PTT key interrupted VAD recording")
             duck_audio()
+            if is_capture:
+                # Open the note while the mic is already rolling
+                threading.Thread(target=_open_capture_target, daemon=True).start()
             # Cute press chirp (ascending blip)
             beep_async(PRESS_CHIRP)
-            logging.info("RCtrl: recording")
+            logging.info("Capture key: recording" if is_capture else "PTT key: recording")
 
         elif key == HOT_MIC_KEY:
             global hot_mic
@@ -1325,7 +1385,7 @@ def on_release(key):
             if _binding_mode is not None:
                 return
 
-        if key == PTT_KEY:
+        if key == PTT_KEY or key == CAPTURE_KEY:
             with state_lock:
                 if state != State.MANUAL:
                     return
