@@ -460,8 +460,35 @@ _OLLAMA_INSTRUCTION = (
     "list is for spelling reference only, not for insertion. Capitalize only sentence "
     "starts and proper nouns; do not capitalize ordinary mid-sentence words. Preserve "
     "all symbols, slashes, numbers, dollar signs, and line breaks exactly. "
-    "Return ONLY the corrected text."
+    "Speech-to-text often inserts a period where the speaker merely paused — merge "
+    "those fragments back into one sentence. Return ONLY the corrected text.\n"
+    "\n"
+    "Example input: I told the customer we'd email the BOL and label. Together. "
+    "And the driver, isaiah, Said the rate stands at $675.\n"
+    "Example output: I told the customer we'd email the BOL and label together, "
+    "and the driver, Isaiah, said the rate stands at $675.\n"
+    "\n"
+    "Example input: The Consignee is a hospital dock. so some carriers post-bill "
+    "limited access\n"
+    "Example output: The consignee is a hospital dock, so some carriers post-bill "
+    "limited access."
 )
+
+_CLEANUP_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanup-log.jsonl")
+
+def _log_cleanup_pair(raw, cleaned, model, duration, window):
+    """Append a (raw → cleaned) pair for later prompt refinement / tuning.
+    Local file, audit + future fine-tune corpus."""
+    try:
+        with open(_CLEANUP_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "window": window, "model": model,
+                "duration_s": round(duration, 2),
+                "raw": raw, "cleaned": cleaned,
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        logging.exception("cleanup pair log failed")
 
 def llm_cleanup(text):
     """Optional local-LLM polish via Ollama. Hard timeout; any failure returns
@@ -470,9 +497,14 @@ def llm_cleanup(text):
     if not OLLAMA_CLEANUP or not text or not text.strip():
         return text
     vocab_hint = ", ".join((_dictionary.get("vocab") or [])[:40])
+    window = _active_window_title()
     prompt = _OLLAMA_INSTRUCTION
     if vocab_hint:
         prompt += f"\nKnown vocabulary (use these exact spellings): {vocab_hint}"
+    if window:
+        # App context (window TITLE only — content is never read): lets the
+        # model match register, e.g. an email vs a quick note vs a chat.
+        prompt += f"\nThe text is being dictated into this window: {window}"
     prompt += f"\n\nText: {text}"
     body = json.dumps({
         "model": OLLAMA_MODEL,
@@ -496,7 +528,10 @@ def llm_cleanup(text):
         # it disobeyed (hallucinated or summarized), so keep the raw transcript.
         if not out or len(out) > len(text) * 1.6 + 20 or len(out) < len(text) * 0.4:
             logging.warning("ollama: output failed sanity check, using raw text")
+            _log_cleanup_pair(text, "[REJECTED] " + (out or ""), OLLAMA_MODEL,
+                              time.time() - t0, window)
             return text
+        _log_cleanup_pair(text, out, OLLAMA_MODEL, time.time() - t0, window)
         return out
     except Exception as e:
         logging.warning(f"ollama cleanup unavailable ({e}); using raw text")

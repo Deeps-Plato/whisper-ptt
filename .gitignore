@@ -10,4 +10,5 @@ GEMINI.md
 # Machine-local runtime config & generated assets
 ptt-settings.json
 dictionary.json
+cleanup-log.jsonl
 whisper-ptt.ico
