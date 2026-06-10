@@ -94,6 +94,8 @@ VAD_KEY          = keyboard.Key.f8       # toggle VAD
 TEACH_KEY        = keyboard.Key.f7       # learn corrections from selected fixed text
 CAPTURE_KEY      = keyboard.Key.f15      # note-capture PTT: silent append to your note
 REPASTE_KEY      = keyboard.Key.f16      # re-paste the last transcript at current focus
+CAPTURE_STRUCT_KEY = keyboard.Key.f17    # like capture, but the ramble is restructured
+                                         # into bullets/action items before it lands
 PTT_MOUSE_BUTTON = mouse.Button.x2       # mouse PTT hold (front thumb button)
 
 # Note-capture: hold CAPTURE_KEY, talk, release — the transcript is delivered
@@ -150,7 +152,8 @@ _SETTINGS_DEFAULTS = {
     "device_name": DEVICE_NAME, "model_size": MODEL_SIZE,
     "vad_enabled": False, "hot_mic": False,
     "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8", "teach_key": "f7",
-    "capture_key": "f15", "repaste_key": "f16", "ptt_mouse_button": "x2",
+    "capture_key": "f15", "repaste_key": "f16", "capture_struct_key": "f17",
+    "ptt_mouse_button": "x2",
     "capture_uri": CAPTURE_URI, "capture_text_uri": CAPTURE_TEXT_URI,
     "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
     "capture_window_hint": CAPTURE_WINDOW_HINT,
@@ -180,6 +183,7 @@ def save_settings() -> None:
         "teach_key": _key_to_str(TEACH_KEY),
         "capture_key": _key_to_str(CAPTURE_KEY),
         "repaste_key": _key_to_str(REPASTE_KEY),
+        "capture_struct_key": _key_to_str(CAPTURE_STRUCT_KEY),
         "ptt_mouse_button": _button_to_str(PTT_MOUSE_BUTTON),
         "capture_uri": CAPTURE_URI, "capture_text_uri": CAPTURE_TEXT_URI,
         "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
@@ -374,6 +378,7 @@ for _attr, _setting, _default in [
     ("TEACH_KEY",   "teach_key",   keyboard.Key.f7),
     ("CAPTURE_KEY", "capture_key", keyboard.Key.f15),
     ("REPASTE_KEY", "repaste_key", keyboard.Key.f16),
+    ("CAPTURE_STRUCT_KEY", "capture_struct_key", keyboard.Key.f17),
 ]:
     try:
         globals()[_attr] = _str_to_key(_s[_setting])
@@ -396,7 +401,8 @@ RESTORE_DELAY = 0.12           # seconds after the release beep before un-duckin
 _VOL_TOLERANCE = 0.02          # treat a session within this of its target as restored
 _RESTORE_VERIFY_PASSES = 4     # re-check/re-apply restored volumes up to this many times
 manual_chunks = []  # chunks collected during F9 hold
-_capture_session = False   # current manual recording was started by the capture key
+_capture_session = False   # current manual recording was started by a capture key
+_capture_struct = False    # ...by the STRUCTURED capture key specifically
 key_sender = keyboard.Controller()
 
 # ── Device ──────────────────────────────────────────────────────────
@@ -1070,6 +1076,44 @@ def _append_capture_text(text):
     os.startfile(uri)
     logging.info(f"capture: appended {len(text)} chars via URI")
 
+_RESTRUCTURE_INSTRUCTION = (
+    "Restructure this spoken ramble into clean, concise markdown notes. Use short "
+    "bullet points; phrase any tasks or follow-ups as '- [ ] ' checkbox items. Keep "
+    "ALL facts, names, numbers, and dates — do not summarize away detail, do not add "
+    "commentary or content that was not spoken. Return ONLY the markdown."
+)
+
+def llm_restructure(text):
+    """Turn a dictated ramble into structured markdown via Ollama. Explicit user
+    intent (the struct capture key), so it runs even when the cleanup toggle is
+    off. Falls back to the verbatim transcript on any failure."""
+    if not text or not text.strip():
+        return text
+    prompt = _RESTRUCTURE_INSTRUCTION + f"\n\nTranscript: {text}"
+    body = json.dumps({
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": "30m",
+        "options": {"temperature": 0},
+    }).encode("utf-8")
+    timeout = 10.0 + len(text) / 150.0
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            out = json.loads(r.read().decode("utf-8")).get("response", "").strip()
+        # Restructuring legitimately changes length — only reject the absurd.
+        if not out or len(out) > len(text) * 3 + 100 or len(out) < len(text) * 0.25:
+            logging.warning("restructure: output failed sanity check, keeping verbatim")
+            return text
+        logging.info(f"restructure: {len(text)} chars in {time.time()-t0:.1f}s")
+        return out
+    except Exception as e:
+        logging.warning(f"restructure unavailable ({e}); keeping verbatim")
+        return text
+
 _HISTORY_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dictation-history.jsonl")
 
 def _log_dictation(raw, final, mode, window):
@@ -1088,10 +1132,13 @@ def _log_dictation(raw, final, mode, window):
 def deliver_text(cleaned, press_enter, raw=""):
     """Route a manual-session transcript: capture sessions append to the note,
     plain PTT pastes at the cursor. Logs to history either way."""
-    global _capture_session, _last_pasted_text
-    mode = "capture" if _capture_session else "ptt"
+    global _capture_session, _capture_struct, _last_pasted_text
+    mode = ("capture-struct" if _capture_struct else
+            "capture" if _capture_session else "ptt")
     try:
         if _capture_session and (CAPTURE_FILE or CAPTURE_TEXT_URI) and cleaned:
+            if _capture_struct:
+                cleaned = llm_restructure(cleaned)
             _append_capture_text(cleaned)
             _last_pasted_text = cleaned   # teach + re-paste track captures too
         elif cleaned or press_enter:
@@ -1102,6 +1149,7 @@ def deliver_text(cleaned, press_enter, raw=""):
             paste_text(cleaned, press_enter)
     finally:
         _capture_session = False
+        _capture_struct = False
         if cleaned:
             _log_dictation(raw, cleaned, mode, _active_window_title())
 
@@ -1425,6 +1473,8 @@ def build_menu():
                          _on_bind("capture_key")),
         pystray.MenuItem(lambda item: f"Re-paste key: {_key_label(REPASTE_KEY)}",
                          _on_bind("repaste_key")),
+        pystray.MenuItem(lambda item: f"Structured capture key: {_key_label(CAPTURE_STRUCT_KEY)}",
+                         _on_bind("capture_struct_key")),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(lambda item: f"PTT mouse button: {_button_label(PTT_MOUSE_BUTTON)}",
                          _on_bind("ptt_mouse_button")),
@@ -1478,7 +1528,8 @@ def start_tray():
 # ── Binding capture ──────────────────────────────────────────────────
 def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
     """Assign the captured key to the binding target and persist."""
-    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, TEACH_KEY, CAPTURE_KEY, REPASTE_KEY, _binding_mode
+    global PTT_KEY, HOT_MIC_KEY, VAD_KEY, TEACH_KEY, CAPTURE_KEY, REPASTE_KEY, \
+           CAPTURE_STRUCT_KEY, _binding_mode
     if key == keyboard.Key.esc:          # Escape cancels without changing anything
         logging.info("Bind cancelled (Escape)")
     else:
@@ -1494,6 +1545,8 @@ def _finish_bind(mode: str, key: keyboard.Key | keyboard.KeyCode) -> None:
             CAPTURE_KEY = key
         elif mode == "repaste_key":
             REPASTE_KEY = key
+        elif mode == "capture_struct_key":
+            CAPTURE_STRUCT_KEY = key
         logging.info(f"Bound {mode} → {_key_label(key)}")
         save_settings()
     with _binding_lock:
@@ -1534,9 +1587,9 @@ def on_press(key):
             _finish_bind(mode, key)
             return    # don't let the key also trigger its normal action
 
-        if key == PTT_KEY or key == CAPTURE_KEY:
-            global _capture_session
-            is_capture = (key == CAPTURE_KEY)
+        if key in (PTT_KEY, CAPTURE_KEY, CAPTURE_STRUCT_KEY):
+            global _capture_session, _capture_struct
+            is_capture = key in (CAPTURE_KEY, CAPTURE_STRUCT_KEY)
             if is_capture and not (CAPTURE_URI or CAPTURE_FILE or CAPTURE_TEXT_URI):
                 logging.warning("capture key pressed but no capture target configured — ignoring")
                 return
@@ -1549,6 +1602,7 @@ def on_press(key):
             update_tray()
             manual_chunks = []
             _capture_session = is_capture
+            _capture_struct = (key == CAPTURE_STRUCT_KEY)
             if prev in (State.BUFFERING, State.CHECKING):
                 restore_audio()
                 logging.info("PTT key interrupted VAD recording")
@@ -1600,7 +1654,7 @@ def on_release(key):
             if _binding_mode is not None:
                 return
 
-        if key == PTT_KEY or key == CAPTURE_KEY:
+        if key in (PTT_KEY, CAPTURE_KEY, CAPTURE_STRUCT_KEY):
             with state_lock:
                 if state != State.MANUAL:
                     return
