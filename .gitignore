@@ -12,4 +12,5 @@ ptt-settings.json
 dictionary.json
 cleanup-log.jsonl
 dictation-history.jsonl
+watchdog.log
 whisper-ptt.ico
