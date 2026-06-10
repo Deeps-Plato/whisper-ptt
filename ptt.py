@@ -1718,9 +1718,15 @@ def _cancel_bind() -> None:
     update_tray()
 
 # ── Keyboard handlers ──────────────────────────────────────────────
+_ctrl_down = False   # tracked so Ctrl+<PTT mouse button> chords (e.g. an external
+                     # Ctrl+MB5 macro) don't also start a phantom recording
+
 def on_press(key):
-    global state, manual_chunks
+    global state, manual_chunks, _ctrl_down
     try:
+        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r, keyboard.Key.ctrl):
+            _ctrl_down = True
+
         # Binding mode intercept — capture next key press as new binding
         with _binding_lock:
             mode = _binding_mode
@@ -1793,8 +1799,11 @@ def on_press(key):
         logging.exception("Error in on_press")
 
 def on_release(key):
-    global state, manual_chunks
+    global state, manual_chunks, _ctrl_down
     try:
+        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r, keyboard.Key.ctrl):
+            _ctrl_down = False
+
         # Ignore release events during binding mode
         with _binding_lock:
             if _binding_mode is not None:
@@ -1856,6 +1865,11 @@ def on_click(x, y, button, pressed):
 
         if button == PTT_MOUSE_BUTTON:
             if pressed:
+                if _ctrl_down:
+                    # Ctrl+<PTT button> belongs to an external chord macro
+                    # (e.g. Ctrl+MB5 quick-note) — don't start recording.
+                    logging.info("PTT mouse button ignored (Ctrl held — chord)")
+                    return
                 # Middle button pressed - start recording
                 with state_lock:
                     if state == State.MANUAL:
