@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-06-10
+
+- **Undo last teach** (tray → Dictionary): teach events are recorded to `_teach_history`
+  in dictionary.json (last 20) and the newest can be reverted — corrections and any vocab
+  it added — so one bad learn can't silently poison future dictations
+- **Re-paste key** (F16, rebindable): re-pastes the last transcript at the current focus,
+  for when a dialog or focus change ate the original paste. Every manual dictation is now
+  logged to `dictation-history.jsonl` (raw, final, mode, window; machine-local)
+- **Structured capture key** (F17, rebindable): like the capture key, but the transcript is
+  restructured by the local LLM into concise markdown bullets with `- [ ]` action items
+  before it lands in the note; verbatim fallback if Ollama is unreachable
+- **Recording indicator**: always-on-top speech-wave bubble near the cursor — bars follow
+  live mic level while recording, orange pulse while transcribing. Parks off-screen instead
+  of unmapping so it can never steal focus from the paste target. Tray-toggleable
+- **watchdog.ps1**: auto-start at logon + self-heal (relaunches ptt.py within 5 min if the
+  process dies); run from a `shell:startup` shortcut, hidden window
+- Per-app style profiles (2026-06-09 late): `app_profiles` in dictionary.json maps window-
+  title substrings to style instructions for the cleanup pass; `"skip"` bypasses the LLM
+  entirely (terminals). Capture delivery moved to silent direct file-append (`capture_file`)
+  after the URI-open flow stole focus mid-dictation
+
 ## 2026-06-09
 
 - **Managed dictionary**: vocab + corrections move from in-code constants to

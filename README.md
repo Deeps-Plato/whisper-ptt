@@ -140,6 +140,22 @@ Default bindings:
 | F10 | Toggle hot mic (continuous voice-activated dictation) |
 | F8 | Toggle VAD on/off |
 | F7 | Teach: learn corrections from the selected fixed text |
+| F15 | Note capture: hold/talk/release → silent append to your note file |
+| F16 | Re-paste the last transcript at the current focus |
+| F17 | Structured capture: like F15, but the ramble is restructured into bullets/checkboxes first |
+
+All keys are rebindable from the tray. A small **speech-wave bubble** appears
+near the cursor while the mic is hot (blue bars = recording level, orange
+pulse = transcribing); toggle it via tray → **Recording indicator**. The tray
+**Dictionary** menu also has **Undo last teach** to revert the most recent
+learned correction. Every dictation is logged to `dictation-history.jsonl`
+(machine-local).
+
+### Auto-start / self-heal
+
+Put a shortcut to `watchdog.ps1` in `shell:startup`
+(`powershell -WindowStyle Hidden -File watchdog.ps1`): it launches `ptt.py`
+at logon and relaunches it within 5 minutes if it ever dies.
 
 Rebind any hotkey — including the **PTT mouse button** — interactively via the system tray: right-click the tray icon → **Hotkeys** → click the binding you want to change → press the new key (or click the new mouse button; Esc to cancel). Side buttons (X1/X2) and the middle button work as the PTT mouse button; left/right click are reserved and ignored while binding. Bindings persist to `ptt-settings.json` and reload on next start.
 
