@@ -128,7 +128,8 @@ SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptt-se
 
 _SETTINGS_DEFAULTS = {
     "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND, "beep_volume": BEEP_VOLUME,
-    "device_name": DEVICE_NAME, "vad_enabled": False, "hot_mic": False,
+    "device_name": DEVICE_NAME, "model_size": MODEL_SIZE,
+    "vad_enabled": False, "hot_mic": False,
     "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8", "teach_key": "f7",
     "ptt_mouse_button": "x2",
     "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
@@ -149,7 +150,8 @@ def load_settings() -> dict:
 def save_settings() -> None:
     data = {
         "duck_level": DUCK_LEVEL, "beep_backend": BEEP_BACKEND, "beep_volume": BEEP_VOLUME,
-        "device_name": DEVICE_NAME, "vad_enabled": vad_enabled, "hot_mic": hot_mic,
+        "device_name": DEVICE_NAME, "model_size": MODEL_SIZE,
+        "vad_enabled": vad_enabled, "hot_mic": hot_mic,
         "ptt_key": _key_to_str(PTT_KEY),
         "hot_mic_key": _key_to_str(HOT_MIC_KEY),
         "vad_key": _key_to_str(VAD_KEY),
@@ -326,6 +328,7 @@ DUCK_LEVEL   = _s["duck_level"]
 BEEP_BACKEND = _s["beep_backend"]
 BEEP_VOLUME  = _s["beep_volume"]
 DEVICE_NAME  = _s["device_name"]
+MODEL_SIZE   = _s["model_size"]
 vad_enabled  = _s["vad_enabled"]
 hot_mic      = _s["hot_mic"]
 OLLAMA_CLEANUP = bool(_s["ollama_cleanup"])

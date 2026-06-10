@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.venv/
 # Agent docs & secrets
 CLAUDE.md
 CLAUDE.local.md
