@@ -191,5 +191,23 @@ check("voice: normal dictation not consumed",
 check("voice: bare prefix consumed, no action",
       _match_voice_command("command", CMDS, "command"), (None, True))
 
+CMDS2 = {"screenshot": "keys:win+shift+s",
+         "browse to reddit": "run:start chrome https://old.reddit.com/top/"}
+check("voice: full-phrase key defines its own trigger",
+      _match_voice_command("Browse to Reddit.", CMDS2, "command"),
+      ("run:start chrome https://old.reddit.com/top/", True))
+check("voice: full-phrase partial match",
+      _match_voice_command("browse to red", CMDS2, "command"),
+      ("run:start chrome https://old.reddit.com/top/", True))
+check("voice: unknown browse target consumed, no action",
+      _match_voice_command("browse to facebook", CMDS2, "command"),
+      (None, True))
+check("voice: classic key still works alongside",
+      _match_voice_command("command screenshot", CMDS2, "command"),
+      ("keys:win+shift+s", True))
+check("voice: non-trigger first word untouched",
+      _match_voice_command("browsing the rates now", CMDS2, "command"),
+      (None, False))
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

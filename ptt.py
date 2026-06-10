@@ -1146,21 +1146,42 @@ _KEYNAMES = {
 
 def _match_voice_command(text, commands, prefix):
     """(action, consumed): consumed=True means the utterance was a command
-    attempt (matched or not) and must NOT be pasted. Pure matcher — exact
-    phrase first, then prefix-overlap either direction."""
-    words = re.sub(r"[^\w\s+]", " ", (text or "").lower()).split()
-    if not words or words[0] != prefix.lower() or not commands:
+    attempt (matched or not) and must NOT be pasted.
+
+    Two key styles:
+      "screenshot"        — classic: spoken as "<prefix> screenshot"
+      "browse to reddit"  — full-phrase: any multi-word key whose first word
+                            isn't the prefix defines its OWN trigger word, so
+                            new command families need no code change.
+    Exact match first, then prefix-overlap either direction."""
+    if not commands:
         return None, False
-    phrase = " ".join(words[1:])
-    if not phrase:
-        return None, True
-    if phrase in commands:
-        return commands[phrase], True
-    for k in sorted(commands, key=len, reverse=True):
-        kl = k.lower()
-        if phrase.startswith(kl) or kl.startswith(phrase):
-            return commands[k], True
-    return None, True
+    words = re.sub(r"[^\w\s+]", " ", (text or "").lower()).split()
+    if not words:
+        return None, False
+
+    def lookup(phrase, keys):
+        if not phrase:
+            return None
+        if phrase in keys:
+            return commands[keys[phrase]]
+        for kl in sorted(keys, key=len, reverse=True):
+            if phrase.startswith(kl) or kl.startswith(phrase):
+                return commands[keys[kl]]
+        return None
+
+    if words[0] == prefix.lower():
+        keys = {k.lower(): k for k in commands
+                if k.split()[0].lower() != words[0]}   # classic, prefix-less keys
+        return lookup(" ".join(words[1:]), keys), True
+
+    triggers = {k.split()[0].lower() for k in commands if " " in k}
+    if words[0] in triggers:
+        keys = {k.lower(): k for k in commands
+                if k.split()[0].lower() == words[0]}   # full-phrase keys
+        return lookup(" ".join(words), keys), True
+
+    return None, False
 
 def _send_keys(spec):
     parts = [p.strip().lower() for p in spec.split("+") if p.strip()]
