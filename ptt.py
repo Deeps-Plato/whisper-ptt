@@ -448,8 +448,12 @@ def transcribe(audio):
 # ── Ollama cleanup pass ──────────────────────────────────────────────
 _OLLAMA_INSTRUCTION = (
     "Fix transcription errors, capitalization, and punctuation in the dictated text. "
-    "Do NOT rephrase, summarize, expand, or add content. Preserve all symbols, "
-    "slashes, numbers, and line breaks exactly. Return ONLY the corrected text."
+    "Do NOT rephrase, summarize, expand, or add content. NEVER insert words, "
+    "abbreviations, parentheses, or annotations that were not spoken — the vocabulary "
+    "list is for spelling reference only, not for insertion. Capitalize only sentence "
+    "starts and proper nouns; do not capitalize ordinary mid-sentence words. Preserve "
+    "all symbols, slashes, numbers, dollar signs, and line breaks exactly. "
+    "Return ONLY the corrected text."
 )
 
 def llm_cleanup(text):
@@ -470,11 +474,16 @@ def llm_cleanup(text):
         "keep_alive": "30m",
         "options": {"temperature": 0},
     }).encode("utf-8")
+    # Long dictations produce proportionally long cleanups — scale the timeout
+    # with text length so long-form doesn't silently fall back to raw.
+    timeout = OLLAMA_TIMEOUT_SECS + len(text) / 200.0
+    t0 = time.time()
     try:
         req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_SECS) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             out = json.loads(r.read().decode("utf-8")).get("response", "").strip()
+        logging.info(f"ollama cleanup: {len(text)} chars in {time.time()-t0:.1f}s")
         out = out.strip('"').strip()
         # Guardrail: the model must not rewrite/expand — big length drift means
         # it disobeyed (hallucinated or summarized), so keep the raw transcript.
