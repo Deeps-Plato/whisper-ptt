@@ -72,6 +72,8 @@ TERMINAL_TITLE_HINTS = (
 
 WAKE_PHRASE = "send it"
 MANUAL_OVER = False   # opt-in: ending a manual-PTT dictation with "over" presses Enter
+COMMAND_PREFIX = "command"   # dictations starting with this word run voice_commands
+                             # from dictionary.json instead of pasting text
 VAD_THRESHOLD = 0.5
 SILENCE_CHECK_SECS = 2.0    # silence before checking for "over"/"disregard"
 MAX_DICTATION_SECS = 300.0  # 5 min safety timeout
@@ -265,6 +267,7 @@ def load_dictionary():
     d.setdefault("vocab", [])
     d.setdefault("corrections", {})
     d.setdefault("app_profiles", {})
+    d.setdefault("voice_commands", {})   # "phrase": "keys:..." | "run:..." | "open:..."
     d.setdefault("_teach_history", [])   # last N teach events, for undo
     _dictionary = d
     EFFECTIVE_PROMPT = build_initial_prompt(d)
@@ -1127,6 +1130,82 @@ def _append_capture_text(text):
     os.startfile(uri)
     logging.info(f"capture: appended {len(text)} chars via URI")
 
+# ── Voice commands ───────────────────────────────────────────────────
+# Dictations starting with COMMAND_PREFIX run an action from the dictionary's
+# voice_commands map instead of pasting text. Deterministic lookup — no LLM
+# decides what executes. Actions: "keys:win+shift+s", "run:calc.exe",
+# "open:obsidian://...". Hot-editable like the rest of dictionary.json.
+_KEYNAMES = {
+    "win": keyboard.Key.cmd, "ctrl": keyboard.Key.ctrl, "alt": keyboard.Key.alt,
+    "shift": keyboard.Key.shift, "enter": keyboard.Key.enter, "tab": keyboard.Key.tab,
+    "esc": keyboard.Key.esc, "space": keyboard.Key.space, "del": keyboard.Key.delete,
+    "home": keyboard.Key.home, "end": keyboard.Key.end,
+    "printscreen": keyboard.Key.print_screen, "prtsc": keyboard.Key.print_screen,
+    **{f"f{i}": getattr(keyboard.Key, f"f{i}") for i in range(1, 21)},
+}
+
+def _match_voice_command(text, commands, prefix):
+    """(action, consumed): consumed=True means the utterance was a command
+    attempt (matched or not) and must NOT be pasted. Pure matcher — exact
+    phrase first, then prefix-overlap either direction."""
+    words = re.sub(r"[^\w\s+]", " ", (text or "").lower()).split()
+    if not words or words[0] != prefix.lower() or not commands:
+        return None, False
+    phrase = " ".join(words[1:])
+    if not phrase:
+        return None, True
+    if phrase in commands:
+        return commands[phrase], True
+    for k in sorted(commands, key=len, reverse=True):
+        kl = k.lower()
+        if phrase.startswith(kl) or kl.startswith(phrase):
+            return commands[k], True
+    return None, True
+
+def _send_keys(spec):
+    parts = [p.strip().lower() for p in spec.split("+") if p.strip()]
+    keys = [_KEYNAMES.get(p, p) for p in parts]
+    if not keys:
+        return
+    *mods, last = keys
+    if mods:
+        with key_sender.pressed(*mods):
+            key_sender.press(last)
+            key_sender.release(last)
+    else:
+        key_sender.press(last)
+        key_sender.release(last)
+
+def _execute_voice_command(action):
+    import subprocess
+    if action.startswith("keys:"):
+        _send_keys(action[5:])
+    elif action.startswith("run:"):
+        subprocess.Popen(action[4:], shell=True)   # user's own config, own machine
+    elif action.startswith("open:"):
+        os.startfile(action[5:])
+    else:
+        raise ValueError(f"unknown action type: {action!r}")
+
+def try_voice_command(text):
+    """Intercept command-prefixed dictations. Returns True if consumed."""
+    action, consumed = _match_voice_command(
+        text, _dictionary.get("voice_commands") or {}, COMMAND_PREFIX)
+    if not consumed:
+        return False
+    if action is None:
+        logging.info(f"voice command: no match for {text!r}")
+        beep_async([(400, 120)])
+        return True
+    try:
+        _execute_voice_command(action)
+        logging.info(f"voice command: {text!r} -> {action!r}")
+        beep_async([(880, 60), (1175, 80)])
+    except Exception:
+        logging.exception(f"voice command failed: {action!r}")
+        beep_async([(400, 120)])
+    return True
+
 _RESTRUCTURE_INSTRUCTION = (
     "Restructure this spoken ramble into clean, concise markdown notes. Use short "
     "bullet points; phrase any tasks or follow-ups as '- [ ] ' checkbox items. Keep "
@@ -1846,11 +1925,14 @@ def on_release(key):
                 text = transcribe(audio)
                 if text.strip():
                     logging.info(f"F9 raw: {text}")
-                    cleaned, press_enter = process_commands(
-                        text, radio="over" if MANUAL_OVER else False)
-                    if cleaned:
-                        cleaned = llm_cleanup(cleaned)
-                    deliver_text(cleaned, press_enter, raw=text)
+                    if not _capture_session and try_voice_command(text):
+                        pass   # executed (or consumed) a voice command — no paste
+                    else:
+                        cleaned, press_enter = process_commands(
+                            text, radio="over" if MANUAL_OVER else False)
+                        if cleaned:
+                            cleaned = llm_cleanup(cleaned)
+                        deliver_text(cleaned, press_enter, raw=text)
                 else:
                     logging.info("No speech detected")
             else:
@@ -1925,11 +2007,14 @@ def on_click(x, y, button, pressed):
                     text = transcribe(audio)
                     if text.strip():
                         logging.info(f"Thumb button raw: {text}")
-                        cleaned, press_enter = process_commands(
-                            text, radio="over" if MANUAL_OVER else False)
-                        if cleaned:
-                            cleaned = llm_cleanup(cleaned)
-                        deliver_text(cleaned, press_enter, raw=text)
+                        if not _capture_session and try_voice_command(text):
+                            pass   # executed (or consumed) a voice command — no paste
+                        else:
+                            cleaned, press_enter = process_commands(
+                                text, radio="over" if MANUAL_OVER else False)
+                            if cleaned:
+                                cleaned = llm_cleanup(cleaned)
+                            deliver_text(cleaned, press_enter, raw=text)
                     else:
                         logging.info("No speech detected")
                 else:

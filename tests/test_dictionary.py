@@ -19,7 +19,8 @@ PTT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 
 FUNCS = ("build_initial_prompt", "apply_corrections",
          "_norm_word", "_clean_token", "_extract_pairs", "_app_profile_for",
-         "_profile_field", "_profile_style", "strip_punctuation", "process_commands")
+         "_profile_field", "_profile_style", "strip_punctuation", "process_commands",
+         "_match_voice_command")
 
 def load_funcs():
     with open(PTT, "r", encoding="utf-8") as f:
@@ -168,6 +169,27 @@ check("radio off: trailing over stays literal",
 check("full radio: correction still works",
       process_commands("hello world correction there", radio=True),
       ("Hello there. ", False))
+
+# ── voice command matching ───────────────────────────────────────────
+_match_voice_command = ns["_match_voice_command"]
+CMDS = {"screenshot": "keys:win+shift+s", "task manager": "keys:ctrl+shift+esc"}
+check("voice: exact match",
+      _match_voice_command("command screenshot", CMDS, "command"),
+      ("keys:win+shift+s", True))
+check("voice: punctuation tolerated",
+      _match_voice_command("Command, screenshot.", CMDS, "command"),
+      ("keys:win+shift+s", True))
+check("voice: partial phrase matches",
+      _match_voice_command("command task", CMDS, "command"),
+      ("keys:ctrl+shift+esc", True))
+check("voice: unknown command consumed but no action",
+      _match_voice_command("command make coffee", CMDS, "command"),
+      (None, True))
+check("voice: normal dictation not consumed",
+      _match_voice_command("the command center is busy", CMDS, "command"),
+      (None, False))
+check("voice: bare prefix consumed, no action",
+      _match_voice_command("command", CMDS, "command"), (None, True))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
