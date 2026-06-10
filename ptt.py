@@ -430,12 +430,19 @@ def load_whisper():
 def apply_corrections(text, corrections=None):
     """Force preferred replacements on Whisper output (case-insensitive,
     whole-word, multi-word keys supported). Longest keys first so
-    "us web ship" wins over "web ship"."""
+    "us web ship" wins over "web ship". Applied twice: a single-word fix
+    (janssen→Janszen) can make a multi-word key match on the second pass
+    ("janszen discount products"→"Janszen Discount Products")."""
     if not text:
         return text
     corr = corrections if corrections is not None else _dictionary.get("corrections") or {}
-    for source in sorted(corr, key=len, reverse=True):
-        text = re.sub(rf'\b{re.escape(source)}\b', corr[source], text, flags=re.IGNORECASE)
+    ordered = sorted(corr, key=len, reverse=True)
+    for _pass in range(2):
+        before = text
+        for source in ordered:
+            text = re.sub(rf'\b{re.escape(source)}\b', corr[source], text, flags=re.IGNORECASE)
+        if text == before:
+            break
     return text
 
 def transcribe(audio):
