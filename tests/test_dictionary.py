@@ -18,7 +18,7 @@ import sys
 PTT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ptt.py")
 
 FUNCS = ("build_initial_prompt", "apply_corrections",
-         "_norm_word", "_clean_token", "_extract_pairs")
+         "_norm_word", "_clean_token", "_extract_pairs", "_app_profile_for")
 
 def load_funcs():
     with open(PTT, "r", encoding="utf-8") as f:
@@ -115,6 +115,26 @@ mixed = _extract_pairs("Quote air bill for jan's in discount products.",
                        "Quote airbill for Janszen Discount Products.")
 check("teach: mixed edit learns the airbill merge",
       any(r == "airbill" for _, r in mixed), True)
+
+# ── _app_profile_for (per-app awareness) ─────────────────────────────
+_app_profile_for = ns["_app_profile_for"]
+PROFILES = {"outlook": "email style", "discord|slack": "chat style",
+            "windows terminal|powershell": "skip"}
+check("profiles: title substring match",
+      _app_profile_for("RE: Courier to Lockheed - Outlook", PROFILES),
+      "email style")
+check("profiles: case-insensitive",
+      _app_profile_for("OUTLOOK", PROFILES), "email style")
+check("profiles: alternative key matches",
+      _app_profile_for("#freight-chat - Slack", PROFILES), "chat style")
+check("profiles: skip value returned verbatim",
+      _app_profile_for("Administrator: Windows Terminal", PROFILES), "skip")
+check("profiles: no match returns None",
+      _app_profile_for("Some Random App", PROFILES), None)
+check("profiles: empty title returns None",
+      _app_profile_for("", PROFILES), None)
+check("profiles: empty profiles returns None",
+      _app_profile_for("Outlook", {}), None)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

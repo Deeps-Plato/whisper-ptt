@@ -248,6 +248,7 @@ def load_dictionary():
     d.setdefault("prompt_prefix", "")
     d.setdefault("vocab", [])
     d.setdefault("corrections", {})
+    d.setdefault("app_profiles", {})
     _dictionary = d
     EFFECTIVE_PROMPT = build_initial_prompt(d)
     logging.info(f"dictionary: {len(d['vocab'])} vocab terms, "
@@ -474,6 +475,20 @@ _OLLAMA_INSTRUCTION = (
     "limited access."
 )
 
+def _app_profile_for(title, profiles):
+    """Match a window title against app_profiles keys. Keys are |-separated
+    case-insensitive title substrings ("outlook", "powershell|cmd|wsl").
+    First matching profile (insertion order) wins; None if no match."""
+    t = (title or "").lower()
+    if not t:
+        return None
+    for key, instruction in (profiles or {}).items():
+        for alt in key.split("|"):
+            alt = alt.strip().lower()
+            if alt and alt in t:
+                return instruction
+    return None
+
 _CLEANUP_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanup-log.jsonl")
 
 def _log_cleanup_pair(raw, cleaned, model, duration, window):
@@ -498,6 +513,11 @@ def llm_cleanup(text):
         return text
     vocab_hint = ", ".join((_dictionary.get("vocab") or [])[:40])
     window = _active_window_title()
+    profile = _app_profile_for(window, _dictionary.get("app_profiles"))
+    if profile is not None and (profile is False
+                                or str(profile).strip().lower() in ("skip", "off", "raw")):
+        logging.info(f"ollama: app profile says skip for window {window!r}")
+        return text
     prompt = _OLLAMA_INSTRUCTION
     if vocab_hint:
         prompt += f"\nKnown vocabulary (use these exact spellings): {vocab_hint}"
@@ -505,6 +525,8 @@ def llm_cleanup(text):
         # App context (window TITLE only — content is never read): lets the
         # model match register, e.g. an email vs a quick note vs a chat.
         prompt += f"\nThe text is being dictated into this window: {window}"
+    if profile:
+        prompt += f"\nStyle for this app: {profile}"
     prompt += f"\n\nText: {text}"
     body = json.dumps({
         "model": OLLAMA_MODEL,
