@@ -95,17 +95,21 @@ TEACH_KEY        = keyboard.Key.f7       # learn corrections from selected fixed
 CAPTURE_KEY      = keyboard.Key.f15      # note-capture PTT: open CAPTURE_URI, record, paste into it
 PTT_MOUSE_BUTTON = mouse.Button.x2       # mouse PTT hold (front thumb button)
 
-# Note-capture: on CAPTURE_KEY press CAPTURE_URI is opened (e.g. an
-# obsidian:// quick-note link) while recording starts. On release the
-# transcription is delivered via CAPTURE_TEXT_URI ({text} placeholder) —
-# appending through the app's own URI handler instead of pasting at the
-# cursor, so cursor races can't misplace the text. If CAPTURE_TEXT_URI is
-# empty, release falls back to a normal clipboard paste at the cursor.
-# {date}/{time}/{text} are substituted URL-encoded. Empty CAPTURE_URI
-# disables the key.
+# Note-capture: hold CAPTURE_KEY, talk, release — the transcript is delivered
+# to your note WITHOUT touching the screen. Delivery modes (first set wins):
+#   CAPTURE_FILE — append CAPTURE_ENTRY directly to a file path template.
+#     Completely silent: no window opens, no focus moves (a note app like
+#     Obsidian live-reloads the file). Preferred.
+#   CAPTURE_TEXT_URI — deliver via a URI handler ({text} placeholder,
+#     URL-encoded). The handler app will usually raise its window.
+#   neither — fall back to a normal clipboard paste at the cursor.
+# CAPTURE_URI optionally opens a URI on PRESS (visual feedback) — empty skips.
+# {date}/{time}/{text} are substituted in all templates.
 CAPTURE_URI = ""
 CAPTURE_TEXT_URI = ""
-CAPTURE_WINDOW_HINT = ""   # window-title substring to focus after opening (best-effort)
+CAPTURE_FILE = ""          # e.g. C:\\vault\\Quick Notes\\{date}.md
+CAPTURE_ENTRY = "\n\n## {time}\n{text}\n"
+CAPTURE_WINDOW_HINT = ""   # window-title substring to focus after press-open (best-effort)
 
 def _key_to_str(key: keyboard.Key | keyboard.KeyCode) -> str:
     """Serialize a pynput key to a JSON-safe string."""
@@ -147,6 +151,7 @@ _SETTINGS_DEFAULTS = {
     "ptt_key": "ctrl_r", "hot_mic_key": "f10", "vad_key": "f8", "teach_key": "f7",
     "capture_key": "f15", "ptt_mouse_button": "x2",
     "capture_uri": CAPTURE_URI, "capture_text_uri": CAPTURE_TEXT_URI,
+    "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
     "capture_window_hint": CAPTURE_WINDOW_HINT,
     "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
 }
@@ -175,6 +180,7 @@ def save_settings() -> None:
         "capture_key": _key_to_str(CAPTURE_KEY),
         "ptt_mouse_button": _button_to_str(PTT_MOUSE_BUTTON),
         "capture_uri": CAPTURE_URI, "capture_text_uri": CAPTURE_TEXT_URI,
+        "capture_file": CAPTURE_FILE, "capture_entry": CAPTURE_ENTRY,
         "capture_window_hint": CAPTURE_WINDOW_HINT,
         "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
     }
@@ -355,6 +361,8 @@ OLLAMA_CLEANUP = bool(_s["ollama_cleanup"])
 OLLAMA_MODEL   = _s["ollama_model"]
 CAPTURE_URI         = _s["capture_uri"]
 CAPTURE_TEXT_URI    = _s["capture_text_uri"]
+CAPTURE_FILE        = _s["capture_file"]
+CAPTURE_ENTRY       = _s["capture_entry"]
 CAPTURE_WINDOW_HINT = _s["capture_window_hint"]
 for _attr, _setting, _default in [
     ("PTT_KEY",     "ptt_key",     keyboard.Key.ctrl_r),
@@ -1002,10 +1010,21 @@ def _open_capture_target():
         logging.exception("capture: window focus failed (paste follows focus)")
 
 def _append_capture_text(text):
-    """Deliver a capture-session transcript by appending through the app's own
-    URI handler (cursor-independent — a paste at the cursor can race the
-    note-open append and land above the heading)."""
+    """Deliver a capture-session transcript. File mode appends directly to the
+    note file — completely silent, no window opens, no focus stolen (a vault
+    app like Obsidian live-reloads the file). URI mode goes through the app's
+    own handler (which usually raises its window). Both are cursor-independent."""
     now = time.localtime()
+    if CAPTURE_FILE:
+        path = CAPTURE_FILE.format(date=time.strftime("%Y-%m-%d", now),
+                                   time=time.strftime("%H:%M", now))
+        entry = CAPTURE_ENTRY.format(date=time.strftime("%Y-%m-%d", now),
+                                     time=time.strftime("%H:%M", now), text=text)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(entry)
+        logging.info(f"capture: appended {len(text)} chars to {path}")
+        return
     uri = CAPTURE_TEXT_URI.format(
         date=urllib.parse.quote(time.strftime("%Y-%m-%d", now)),
         time=urllib.parse.quote(time.strftime("%H:%M", now)),
@@ -1019,7 +1038,7 @@ def deliver_text(cleaned, press_enter):
     plain PTT pastes at the cursor."""
     global _capture_session
     try:
-        if _capture_session and CAPTURE_TEXT_URI and cleaned:
+        if _capture_session and (CAPTURE_FILE or CAPTURE_TEXT_URI) and cleaned:
             _append_capture_text(cleaned)
         elif cleaned or press_enter:
             paste_text(cleaned, press_enter)
@@ -1438,8 +1457,8 @@ def on_press(key):
         if key == PTT_KEY or key == CAPTURE_KEY:
             global _capture_session
             is_capture = (key == CAPTURE_KEY)
-            if is_capture and not CAPTURE_URI:
-                logging.warning("capture key pressed but capture_uri is empty — ignoring")
+            if is_capture and not (CAPTURE_URI or CAPTURE_FILE or CAPTURE_TEXT_URI):
+                logging.warning("capture key pressed but no capture target configured — ignoring")
                 return
             with state_lock:
                 if state == State.MANUAL:
@@ -1454,8 +1473,8 @@ def on_press(key):
                 restore_audio()
                 logging.info("PTT key interrupted VAD recording")
             duck_audio()
-            if is_capture:
-                # Open the note while the mic is already rolling
+            if is_capture and CAPTURE_URI:
+                # Optional press-open visual; file delivery needs no window at all
                 threading.Thread(target=_open_capture_target, daemon=True).start()
             # Cute press chirp (ascending blip)
             beep_async(PRESS_CHIRP)
