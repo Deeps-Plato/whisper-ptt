@@ -174,7 +174,8 @@ Right-click the tray icon to access settings without editing `ptt.py`:
 
 - **VAD enabled** / **Hot mic** — toggle with a checkmark
 - **Ollama cleanup** — toggle the optional local-LLM polish pass
-- **Dictionary** — teach from selection, reload or open `dictionary.json`, live counts
+- **Recording indicator** / **Trailing 'over' presses Enter** — toggles
+- **Dictionary** — teach from selection, undo last teach, GUI editor, reload/open, live counts
 - **Duck level** — 0%, 5%, 10%, 25%, 50% (radio buttons)
 - **Beep backend** — winsound or sounddevice
 - **Beep volume** — Off, 5%, 10%, 15%, 25% (sounddevice only; plays a preview on change)
@@ -207,8 +208,19 @@ See `dictionary.example.json` for the schema:
   Use for words Whisper keeps mishearing the same way.
 - **`prompt_prefix`** — free-text context placed before the vocab list.
 
-Edit the file any time, then tray → **Dictionary → Reload dictionary.json**
-(no restart needed). The tray also shows live vocab/correction counts.
+The file **hot-reloads**: any change on disk is picked up before the next
+transcription — no restart, no tray click. A tkinter **GUI editor** ships too:
+tray → Dictionary → **Edit dictionary (GUI)** (`dictionary_editor.py`) with a
+scope picker for Global or per-app entries, vocab list and misheard→correct
+pairs with add/delete.
+
+**Per-app dictionaries:** an `app_profiles` entry may be an object instead of
+a style string — `{"style": "...", "vocab": [...], "corrections": {...}}`.
+Per-app vocab extends the Whisper prompt and per-app corrections merge over
+the global map (app wins) only when dictating into that app, so gaming jargon
+never pollutes a work email and vice versa. The tray also shows live
+vocab/correction counts, and **Undo last teach** reverts the most recent
+learned correction.
 
 ### Teach Mode (learn from your corrections)
 
@@ -227,6 +239,37 @@ A rising arpeggio confirms a successful learn; a single low beep means nothing
 learnable was found. Only small word-level *replacements* are learned —
 insertions/deletions are treated as content edits, and plain sentence
 capitalization is ignored so common words are never over-learned.
+
+### Voice Commands
+
+Dictations can *do things* instead of pasting. Two pieces, both opt-in:
+
+- **Trailing "over" presses Enter** (`manual_over` setting / tray toggle):
+  end a manual-PTT dictation with the word "over" and Enter fires after the
+  paste — hands-free message sending. Only the final word counts; the other
+  radio commands stay VAD-only so ordinary speech can't delete or cancel.
+- **`voice_commands`** in `dictionary.json` maps spoken phrases to actions:
+
+  ```json
+  "voice_commands": {
+    "screenshot": "keys:win+shift+s",
+    "browse to reddit": "run:start chrome https://old.reddit.com/top/",
+    "search google *": "run:start chrome https://www.google.com/search?q={query}"
+  }
+  ```
+
+  - `keys:` sends a hotkey combo, `run:` launches a program/shell line,
+    `open:` opens a URI or file.
+  - Single-word keys fire as "*command* screenshot" (the `COMMAND_PREFIX`).
+  - Multi-word keys define their **own trigger word** ("browse to reddit"
+    fires on that phrase directly) — new command families are pure config.
+  - Keys ending in ` *` **capture the spoken remainder**: `{query}` is
+    URL-encoded (%20), `{raw}` is the text as spoken. "search google cheapest
+    liftgate carriers" opens the executed search.
+  - Safety: deterministic lookup only (no LLM decides what runs), unmatched
+    attempts beep low and paste nothing, wildcard families only consume
+    speech when the first two words match a key, and capture-key sessions
+    never trigger commands.
 
 ### Ollama Cleanup (optional LLM polish)
 
@@ -301,6 +344,29 @@ cmd.exe /c "tasklist | findstr pythonw"
 
 **Why not a real Windows service?** Services run in session 0 with no desktop access — can't hook keyboard or paste to clipboard.
 
+## Transcribing Audio Files (meetings, memos)
+
+Record however you like (Audacity, phone, OBS), then:
+
+```bash
+python transcribe_file.py recording.wav                # timestamped transcript -> recording.md
+python transcribe_file.py call.mp3 --structured        # meeting notes: summary, bullets, action items
+```
+
+Standalone script using the same model, dictionary corrections, and vocab
+prompt as live dictation; `--structured` runs the transcript through the
+local Ollama model. Handles wav/mp3/m4a/flac and most formats. Reminder:
+recording other people requires their consent in all-party-consent states.
+
 ## Audio Device
 
-Uses Volt 2 audio interface. Change `DEVICE_NAME` in ptt.py if using different hardware.
+`device_name` in `ptt-settings.json` may be a single name or a
+**priority-ordered list** of name substrings — the first device present wins:
+
+```json
+"device_name": ["DJI MIC MINI", "Desk Mic"]
+```
+
+So a lapel mic is preferred whenever its USB receiver is plugged in, with
+automatic fallback otherwise. After plugging/unplugging, tray → **Restart
+PTT** re-runs the pick. The tray Microphone menu still sets a single device.

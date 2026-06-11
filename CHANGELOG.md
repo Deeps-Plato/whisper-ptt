@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-06-10 (later)
+
+- **Per-app dictionaries + hot reload + GUI editor**: `app_profiles` entries may carry
+  per-app `vocab`/`corrections` alongside `style`; dictionary.json hot-reloads on mtime
+  before every transcription; `dictionary_editor.py` (tray → Dictionary → Edit) edits
+  vocab and corrections with a Global/per-app scope picker
+- **Trailing "over" presses Enter** in manual PTT (`manual_over`, tray toggle, off by
+  default): hands-free send; final-word-only, other radio commands stay VAD-only
+- **Voice commands** (`voice_commands` in dictionary.json): `keys:`/`run:`/`open:`
+  actions; classic prefix keys ("command screenshot"), full-phrase keys that define
+  their own trigger ("browse to reddit"), and wildcard query capture ("search google *"
+  → executed search, {query} percent-encoded). Deterministic lookup, no LLM execution
+- **transcribe_file.py**: offline file transcription (same model/dictionary/prompt as
+  live dictation); `--structured` produces meeting notes via Ollama
+- **Mic priority list**: `device_name` accepts an ordered list of name substrings;
+  first present wins (lapel mic when plugged in, desk mic fallback)
+- Ctrl+<PTT mouse button> chords are ignored (external chord macros don't trigger
+  phantom recordings); cleanup prompt hardened from live calibration (no insertions,
+  no stray mid-sentence caps, length-scaled timeout); cleanup pairs + all dictations
+  logged locally (cleanup-log.jsonl, dictation-history.jsonl)
+
 ## 2026-06-10
 
 - **Undo last teach** (tray → Dictionary): teach events are recorded to `_teach_history`
