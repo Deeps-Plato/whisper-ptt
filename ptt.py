@@ -443,10 +443,16 @@ key_sender = keyboard.Controller()
 
 # ── Device ──────────────────────────────────────────────────────────
 def find_device():
+    """DEVICE_NAME may be a single name or a priority-ordered LIST of name
+    substrings — the first one present wins (lapel mic when its receiver is
+    plugged in, desk mic otherwise). After plugging/unplugging a mic, use
+    tray → Restart PTT to re-run the pick."""
+    names = DEVICE_NAME if isinstance(DEVICE_NAME, list) else [DEVICE_NAME]
     devices = sd.query_devices()
-    for i, d in enumerate(devices):
-        if DEVICE_NAME.lower() in d['name'].lower() and d['max_input_channels'] > 0:
-            return i
+    for name in names:
+        for i, d in enumerate(devices):
+            if name.lower() in d['name'].lower() and d['max_input_channels'] > 0:
+                return i
     return None
 
 # ── Models ──────────────────────────────────────────────────────────
