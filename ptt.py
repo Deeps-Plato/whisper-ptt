@@ -1370,6 +1370,7 @@ INDICATOR = True
 def _indicator_loop():
     try:
         import tkinter as tk
+        logging.info("indicator: thread started")
         W, H, N = 104, 34, 7          # bubble size, bar count
         OFFSCREEN = f"{W}x{H}+-{W*3}+-{H*3}"
         root = tk.Tk()
@@ -1382,8 +1383,12 @@ def _indicator_loop():
         root.geometry(OFFSCREEN)
         canvas = tk.Canvas(root, width=W, height=H, bg="#1b1f27", highlightthickness=0)
         canvas.pack()
+        root.withdraw()   # hidden via unmap; deiconify on show (off-screen parking
+        root.update()     # alone left the window unpainted on multi-monitor setups)
+        logging.info("indicator: window created (withdrawn)")
         hist = [0.0] * N
         visible = False
+        shown_once = False
         while True:
             with state_lock:
                 cur = state
@@ -1394,7 +1399,13 @@ def _indicator_loop():
                     except Exception:
                         x, y = 300, 300
                     root.geometry(f"{W}x{H}+{x + 18}+{y + 26}")
+                    root.deiconify()
+                    root.lift()
+                    root.attributes("-topmost", True)
                     visible = True
+                    if not shown_once:
+                        logging.info(f"indicator: first show at {x + 18},{y + 26}")
+                        shown_once = True
                 hist.pop(0)
                 if cur == State.MANUAL:
                     hist.append(min(1.0, (max(_mic_rms, 0.0) * 8.0) ** 0.7))
@@ -1414,7 +1425,7 @@ def _indicator_loop():
                 time.sleep(1 / 30)
             else:
                 if visible:
-                    root.geometry(OFFSCREEN)   # park, never unmap (no focus events)
+                    root.withdraw()
                     visible = False
                 root.update()
                 time.sleep(0.12)
