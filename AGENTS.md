@@ -37,7 +37,8 @@ Scheduled task `WhisperPTT` runs `pythonw.exe ptt.py` directly at logon (no bat 
 ## Hotkeys
 - F9 / middle mouse: hold to record
 - F10: toggle hot mic (continuous VAD)
-- F8: toggle VAD on/off
+- F8: toggle always listening (VAD) on/off — ON keeps the mic stream open and
+  blocks Windows sleep; OFF closes the mic while idle (PTT opens it on demand)
 - F7: teach (learn corrections from selected fixed text)
 
 ## Tests

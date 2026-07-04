@@ -3,8 +3,11 @@
 Right Ctrl hold OR front thumb button (x2) hold: manual PTT (radio commands)
   (both the PTT key and the PTT mouse button are configurable from the tray menu)
 F10: toggle hot mic (no wake phrase, just talk → paste on silence)
-F8: toggle VAD on/off
-Wake word "send it": hands-free dictation, keeps recording until "over"
+F8: toggle always listening (VAD) on/off — while ON the mic stream stays open
+    and Windows will not sleep; OFF closes the mic when idle so the PC can
+    sleep, with manual PTT opening it on demand
+Wake word (default "send it", tray-configurable): hands-free dictation,
+    keeps recording until "over"
 
 Radio commands (voice-activation only — VAD/hot mic, NOT manual PTT):
   break    → newline
@@ -162,6 +165,7 @@ _SETTINGS_DEFAULTS = {
     "capture_window_hint": CAPTURE_WINDOW_HINT,
     "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
     "indicator": True, "manual_over": MANUAL_OVER,
+    "wake_phrase": WAKE_PHRASE,
 }
 
 def load_settings() -> dict:
@@ -194,6 +198,7 @@ def save_settings() -> None:
         "capture_window_hint": CAPTURE_WINDOW_HINT,
         "ollama_cleanup": OLLAMA_CLEANUP, "ollama_model": OLLAMA_MODEL,
         "indicator": INDICATOR, "manual_over": MANUAL_OVER,
+        "wake_phrase": WAKE_PHRASE,
     }
     tmp = SETTINGS_FILE + ".tmp"
     try:
@@ -402,6 +407,7 @@ OLLAMA_CLEANUP = bool(_s["ollama_cleanup"])
 OLLAMA_MODEL   = _s["ollama_model"]
 INDICATOR      = bool(_s["indicator"])
 MANUAL_OVER    = bool(_s["manual_over"])
+WAKE_PHRASE    = str(_s["wake_phrase"]).strip() or WAKE_PHRASE
 CAPTURE_URI         = _s["capture_uri"]
 CAPTURE_TEXT_URI    = _s["capture_text_uri"]
 CAPTURE_FILE        = _s["capture_file"]
@@ -1359,6 +1365,63 @@ def audio_callback(indata, frames, time_info, status):
     except queue.Full:
         pass  # drop chunk silently
 
+# ── Managed mic stream ──────────────────────────────────────────────
+# The input stream is opened only while something needs audio: always
+# listening (VAD) or an in-flight recording. An open capture stream makes
+# the audio driver hold an "audio stream is currently in use" power request,
+# which keeps Windows from sleeping — closing the mic when idle is what lets
+# the PC sleep while PTT stays resident.
+_mic_stream = None
+_mic_stream_lock = threading.Lock()
+_mic_device: int | None = None   # resolved by run_listener; open_mic re-resolves if unset
+
+def _mic_required() -> bool:
+    with state_lock:
+        busy = state != State.IDLE
+    return vad_enabled or busy
+
+def open_mic() -> bool:
+    """Open the input stream if it isn't already open. True when audio flows."""
+    global _mic_stream
+    with _mic_stream_lock:
+        if _mic_stream is not None:
+            return True
+        device = _mic_device if _mic_device is not None else find_device()
+        if device is None:
+            logging.error(f"mic: could not find {DEVICE_NAME}")
+            return False
+        try:
+            stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, device=device,
+                                    callback=audio_callback, blocksize=1600)
+            stream.start()
+            _mic_stream = stream
+            logging.info("mic: stream opened")
+            return True
+        except Exception:
+            logging.exception("mic: open failed")
+            return False
+
+def close_mic() -> None:
+    global _mic_stream
+    with _mic_stream_lock:
+        if _mic_stream is None:
+            return
+        try:
+            _mic_stream.stop()
+            _mic_stream.close()
+        except Exception:
+            logging.exception("mic: close failed")
+        _mic_stream = None
+        logging.info("mic: stream closed (system sleep unblocked)")
+
+def sync_mic_stream() -> None:
+    """Open or close the mic to match current need. Call after any toggle and
+    whenever a recording finishes; must not be called while holding state_lock."""
+    if _mic_required():
+        open_mic()
+    else:
+        close_mic()
+
 # ── Recording indicator (speech-wave overlay) ───────────────────────
 # A small always-on-top bubble near the cursor while the mic is hot: bars
 # driven by live input level (blue = recording, orange pulse = transcribing).
@@ -1537,6 +1600,7 @@ def vad_monitor():
                         speech_buf = np.array([], dtype=np.float32)
                         vad.reset_states()
                         cooldown_until = time.time() + VAD_COOLDOWN_SECS
+                        sync_mic_stream()   # closes mic if VAD was disabled mid-recording
                         logging.info("Max time, no wake phrase, cooldown %ss", VAD_COOLDOWN_SECS)
                     else:
                         with state_lock:
@@ -1565,6 +1629,7 @@ def vad_monitor():
                     update_tray()
                     speech_buf = np.array([], dtype=np.float32)
                     vad.reset_states()
+                    sync_mic_stream()   # closes mic if VAD was disabled mid-recording
                     logging.info("Hot mic done, back to idle")
                 elif last_word == "over" or last_word == "disregard" or elapsed >= MAX_DICTATION_SECS:
                     # Done! Process the full text
@@ -1581,6 +1646,7 @@ def vad_monitor():
                     update_tray()
                     speech_buf = np.array([], dtype=np.float32)
                     vad.reset_states()
+                    sync_mic_stream()   # closes mic if VAD was disabled mid-recording
                     logging.info("Done, back to idle")
                 else:
                     # Wake phrase found but no "over" yet — keep recording
@@ -1630,6 +1696,7 @@ def _on_toggle_vad(icon, item):
     global vad_enabled
     vad_enabled = not vad_enabled
     save_settings()
+    sync_mic_stream()
     update_tray()
 
 def _on_toggle_hot_mic(icon, item):
@@ -1688,6 +1755,43 @@ def _on_toggle_ollama(icon, item):
     OLLAMA_CLEANUP = not OLLAMA_CLEANUP
     save_settings()
     update_tray()
+
+def _set_wake_phrase_dialog():
+    """Ask for a new wake phrase in a small topmost dialog. Runs as a separate
+    process (same pattern as the dictionary editor) — tkinter can't safely be
+    driven from a second thread next to the indicator's interpreter."""
+    global WAKE_PHRASE
+    import subprocess
+    code = (
+        "import tkinter as tk\n"
+        "from tkinter import simpledialog\n"
+        "root = tk.Tk()\n"
+        "root.withdraw()\n"
+        "root.attributes('-topmost', True)\n"
+        "val = simpledialog.askstring('Whisper PTT',\n"
+        "    'Wake phrase for hands-free dictation (needs Always listening ON):',\n"
+        f"    initialvalue={WAKE_PHRASE!r}, parent=root)\n"
+        "print(val or '', end='')\n"
+    )
+    try:
+        out = subprocess.run([sys.executable, "-c", code],
+                             capture_output=True, text=True, timeout=300)
+    except Exception:
+        logging.exception("wake phrase dialog failed")
+        return
+    # Normalize to what the transcript check compares against: lowercase words,
+    # single spaces, no punctuation.
+    phrase = " ".join(re.sub(r"[^\w\s]", " ", out.stdout or "").lower().split())
+    if not phrase or phrase == WAKE_PHRASE:
+        return   # cancelled, empty, or unchanged
+    WAKE_PHRASE = phrase
+    save_settings()
+    logging.info(f"wake phrase set to {WAKE_PHRASE!r}")
+    beep_async([(659, 70), (784, 70)])
+    update_tray()
+
+def _on_set_wake_phrase(icon, item):
+    threading.Thread(target=_set_wake_phrase_dialog, daemon=True).start()
 
 def _on_toggle_manual_over(icon, item):
     global MANUAL_OVER
@@ -1797,8 +1901,10 @@ def build_menu():
     return pystray.Menu(
         pystray.MenuItem(lambda item: f"PTT: {state.name}", None, enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("VAD enabled", _on_toggle_vad, checked=lambda item: vad_enabled),
+        pystray.MenuItem(lambda item: f"Always listening (wake: '{WAKE_PHRASE}'; blocks PC sleep)",
+                         _on_toggle_vad, checked=lambda item: vad_enabled),
         pystray.MenuItem("Hot mic",     _on_toggle_hot_mic, checked=lambda item: hot_mic),
+        pystray.MenuItem("Set wake phrase...", _on_set_wake_phrase),
         pystray.MenuItem(lambda item: f"Ollama cleanup ({OLLAMA_MODEL})",
                          _on_toggle_ollama, checked=lambda item: OLLAMA_CLEANUP),
         pystray.MenuItem("Recording indicator", _on_toggle_indicator,
@@ -1912,6 +2018,14 @@ def on_press(key):
             if prev in (State.BUFFERING, State.CHECKING):
                 restore_audio()
                 logging.info("PTT key interrupted VAD recording")
+            if not open_mic():   # on-demand open when always listening is off
+                _capture_session = False
+                _capture_struct = False
+                with state_lock:
+                    state = State.IDLE
+                update_tray()
+                beep_async([(400, 120)])
+                return
             duck_audio()
             if is_capture and CAPTURE_URI:
                 # Optional press-open visual; file delivery needs no window at all
@@ -1937,9 +2051,10 @@ def on_press(key):
         elif key == VAD_KEY:
             global vad_enabled
             vad_enabled = not vad_enabled
-            logging.info(f"VAD {'enabled' if vad_enabled else 'disabled'}")
+            logging.info(f"Always listening {'enabled' if vad_enabled else 'disabled'}")
             save_settings()
             beep_async([(800 if vad_enabled else 400, 150)])
+            sync_mic_stream()
             update_tray()
 
         elif key == TEACH_KEY:
@@ -2004,6 +2119,7 @@ def on_release(key):
             with state_lock:
                 state = State.IDLE
             update_tray()
+            sync_mic_stream()   # close the mic again unless always listening
 
     except Exception as e:
         logging.exception("Error in on_release")
@@ -2040,6 +2156,12 @@ def on_click(x, y, button, pressed):
                 if prev in (State.BUFFERING, State.CHECKING):
                     restore_audio()
                     logging.info("Thumb button interrupted VAD recording")
+                if not open_mic():   # on-demand open when always listening is off
+                    with state_lock:
+                        state = State.IDLE
+                    update_tray()
+                    beep_async([(400, 120)])
+                    return
                 duck_audio()
                 # Cute press chirp (ascending blip)
                 beep_async(PRESS_CHIRP)
@@ -2086,13 +2208,14 @@ def on_click(x, y, button, pressed):
                 with state_lock:
                     state = State.IDLE
                 update_tray()
+                sync_mic_stream()   # close the mic again unless always listening
 
     except Exception as e:
         logging.exception("Error in on_click")
 
 # ── Main ────────────────────────────────────────────────────────────
 def run_listener():
-    global vad_model
+    global vad_model, _mic_device
 
     _restart_event.clear()
 
@@ -2102,6 +2225,7 @@ def run_listener():
         return False
 
     logging.info(f"Using device: {sd.query_devices(device)['name']}")
+    _mic_device = device
     load_whisper()
 
     # Load VAD
@@ -2118,8 +2242,8 @@ def run_listener():
         t.start()
         logging.info("VAD monitor thread started")
 
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, device=device,
-                        callback=audio_callback, blocksize=1600):
+    try:
+        sync_mic_stream()   # opens only if always listening needs the mic now
         with keyboard.Listener(on_press=on_press, on_release=on_release) as kb_listener, \
              mouse.Listener(on_click=on_click) as mouse_listener:
             while kb_listener.is_alive() and mouse_listener.is_alive():
@@ -2128,6 +2252,9 @@ def run_listener():
                     mouse_listener.stop()
                     break
                 _restart_event.wait(timeout=0.25)
+    finally:
+        close_mic()
+        _mic_device = None
     return True
 
 def main():

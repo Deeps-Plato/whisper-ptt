@@ -41,7 +41,7 @@ Beeps are built in and enabled by default.
 - **F9 / middle mouse release**: descending chirp (C6→E5)
 - **F10 hot mic on**: ascending 3-tone (C5→D5→E5)
 - **F10 hot mic off**: descending 3-tone (E5→D5→C5)
-- **F8 VAD toggle**: high beep = on, low beep = off
+- **F8 always-listening (VAD) toggle**: high beep = on, low beep = off
 
 If a machine has no audible beeps with `winsound`, switch to `sounddevice`:
 
@@ -138,7 +138,7 @@ Default bindings:
 |-----|--------|
 | Right Ctrl / front thumb button (x2) | Hold to record, release to transcribe (PTT) |
 | F10 | Toggle hot mic (continuous voice-activated dictation) |
-| F8 | Toggle VAD on/off |
+| F8 | Toggle always listening (VAD wake-phrase mode) on/off |
 | F7 | Teach: learn corrections from the selected fixed text |
 | F15 | Note capture: hold/talk/release → silent append to your note file |
 | F16 | Re-paste the last transcript at the current focus |
@@ -172,7 +172,12 @@ A tray icon appears in the Windows notification area showing PTT state at a glan
 
 Right-click the tray icon to access settings without editing `ptt.py`:
 
-- **VAD enabled** / **Hot mic** — toggle with a checkmark
+- **Always listening** / **Hot mic** — toggle with a checkmark. Always listening
+  keeps the mic stream open for the wake phrase — Windows treats an open capture
+  stream as "audio in use" and will NOT sleep while it is on. Turned off, the mic
+  is only opened during a PTT hold, so the PC can sleep normally
+- **Set wake phrase...** — change the hands-free wake phrase (default "send it";
+  persists to `ptt-settings.json`)
 - **Ollama cleanup** — toggle the optional local-LLM polish pass
 - **Recording indicator** / **Trailing 'over' presses Enter** — toggles
 - **Dictionary** — teach from selection, undo last teach, GUI editor, reload/open, live counts

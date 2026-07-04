@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-04
+
+- **Always listening toggle + managed mic stream**: the mic input stream is now
+  opened only while it is needed — always listening (VAD wake-phrase mode) on, or
+  a PTT hold in progress. With always listening off, the idle mic is closed, the
+  audio driver drops its "audio stream in use" power request, and Windows can
+  finally sleep with PTT still resident. Tray "VAD enabled" renamed to
+  **Always listening (wake: '<phrase>'; blocks PC sleep)**; F8 unchanged
+- **Configurable wake phrase**: tray → **Set wake phrase...** opens a small dialog;
+  the phrase is normalized (lowercase words) and persisted to `ptt-settings.json`
+
 ## 2026-06-10 (later)
 
 - **Per-app dictionaries + hot reload + GUI editor**: `app_profiles` entries may carry
