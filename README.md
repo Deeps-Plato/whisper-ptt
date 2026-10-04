@@ -8,7 +8,7 @@ Requires Windows, Python 3.10+, NVIDIA GPU with CUDA.
 
 ```bash
 # 1. Clone
-git clone https://github.com/mithril-logic/whisper-ptt.git
+git clone https://github.com/deeps-plato/whisper-ptt.git
 cd whisper-ptt
 
 # 2. Install PyTorch with CUDA (pick your CUDA version: https://pytorch.org/get-started/locally/)
